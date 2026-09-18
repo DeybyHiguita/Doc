@@ -1,191 +1,183 @@
-# Generación de PDF con QuestPDF (.NET / Clean Architecture)
+# 📄 Generación de PDF con QuestPDF — DOCCB Backend
 
-Guía paso a paso para implementar la generación de PDF en la solución **OpainCB** (Src/Application, Src/Domain, Src/Infrastructure, Src/Presentation).
+Guía paso a paso para implementar la generación de PDF en **DOCCB**, respetando la arquitectura documentada en `Arquitectura DOCCB Backend`.
 
-El caso concreto es el **certificado laboral**, pero la infraestructura queda preparada para cualquier otro documento: lo único que se comparte entre todos es el **header** y el **footer**; el contenido y la firma los define cada documento.
+El caso concreto es el **certificado laboral**, pero la base queda lista para cualquier otro documento. Lo único compartido entre todos los PDF es el **header** y el **footer**; el contenido y el bloque de firma los define cada documento.
 
-- Stack: .NET 8 (aplica igual a .NET 9), ASP.NET Core, MediatR, QuestPDF.
-- Namespaces usados: `OpainCB.Domain`, `OpainCB.Application`, `OpainCB.Infrastructure`, `OpainCB.WebApp`.
+> **Nomenclatura:** en este documento y en el código se usa **DOC** como nombre corto del sistema. No se usa el nombre de la concesionaria en código, configuración ni documentación: la razón social va en `appsettings.json`, nunca quemada en clases.
+
+- **Stack:** .NET 8 · ASP.NET Core · Entity Framework Core · QuestPDF
+- **Proyectos:** `WebApp` · `DOCCB.Application` · `DOCCB.Domain` · `DOCCB.Infraestructure`
 
 ---
 
-## 0. Decisiones de diseño (leer antes de codificar)
+## 🎯 Objetivo
 
-| Pieza | Capa | Por qué ahí |
+1. Un **header y un footer únicos** para todos los PDF del sistema (imagen o texto, configurables).
+2. Un **documento base** que fije página, márgenes, header y footer, dejando libre solo el contenido.
+3. Un **bloque de firma reutilizable** que acepta imagen de firma escaneada.
+4. Agregar un PDF nuevo = **3 archivos + 1 línea de DI**.
+
+---
+
+## 🧭 Dónde vive cada pieza (y por qué)
+
+DOCCB ya tiene un precedente claro: `IExcelReportGenerator` vive en `DOCCB.Application/Features/Reports/Application/`, **no** en Infraestructure. En esta arquitectura `DOCCB.Infraestructure` es exclusivamente persistencia (DbContext, Configurations, Repositories, UnitOfWork); los generadores de artefactos son servicios de aplicación.
+
+**Por consistencia, el PDF sigue el mismo camino que el Excel.**
+
+| Pieza | Ubicación | Por qué |
 |---|---|---|
-| Modelos de datos del PDF (`LaborCertificateModel`) | Application / Contracts | Son el contrato de entrada; no dependen de QuestPDF. |
-| `IPdfGenerator`, `IPdfDocumentBuilder<T>`, `IPdfAssetProvider` | Application / Contracts | La capa de aplicación orquesta, no conoce la librería. |
-| Componentes QuestPDF (header, footer, firma) | Infrastructure | QuestPDF es un detalle técnico reemplazable. |
-| `BasePdfDocument<TModel>` | Infrastructure | Template Method: fija header/footer/página, deja libre el contenido. |
-| Command + Handler (`GenerateLaborCertificate`) | Application / Features | Regla de negocio: qué datos lleva el certificado. |
-| Endpoint | Presentation / Controllers | Solo transporte HTTP. |
+| Base PDF: header, footer, firma, documento base | `DOCCB.Application/Features/Pdf/` | Feature transversal, igual que `Features/Common` y `Features/EmailsTemplate`. |
+| Assets (logo, firmas, fuentes) | `DOCCB.Application/Features/Pdf/Assets/` | Mismo patrón que `Features/EmailsTemplate/Assets/`. |
+| Documento concreto (certificado laboral) | `DOCCB.Application/Features/Certificates/Application/` | "Todo lo de una característica, junto". |
+| Datos del empleado | `IUnitOfWork.Repository<User>()` | Regla: los servicios no tocan el `DbContext`. |
+| Endpoint | `WebApp/Controllers/CertificateController.cs` | Ya existe; se le agrega una acción. |
+| Configuración de marca | `appsettings.json` → sección `Pdf` | Nada de textos institucionales en el código. |
 
-**Regla de oro:** `OpainCB.Application` **no** referencia el paquete QuestPDF. Si al terminar `Application.csproj` tiene `<PackageReference Include="QuestPDF" />`, algo quedó en la capa equivocada.
-
-### ⚠️ Licenciamiento (validar antes de instalar)
-QuestPDF es gratuito bajo licencia **Community** solo si la organización factura menos de **USD 1M anuales** (o el proyecto es open source). Para una empresa por encima de ese umbral se requiere licencia **Professional / Enterprise** de pago. Confirma esto con el líder técnico antes de subirlo a producción: es una decisión de negocio, no técnica.
+> **Alternativa purista:** mover todo lo de QuestPDF a `DOCCB.Infraestructure/Pdf/`. Es defendible, pero rompe la simetría con `IExcelReportGenerator`. Si el equipo decide eso, **mueve también el Excel** — lo que no conviene es tener dos criterios distintos para el mismo problema.
 
 ---
 
-## 1. Estructura de archivos a crear
+## ✅ Antes de empezar: 3 verificaciones
+
+QuestPDF **ya figura como dependencia del proyecto** y existe `ICesantiasCertificateGenerationService` en `Features/Requests/Application/Interfaces/`. Antes de escribir código:
+
+1. **¿Dónde está referenciado QuestPDF?**
+   ```bash
+   grep -r "QuestPDF" --include="*.csproj" .
+   ```
+   Anota el proyecto y la versión. Esta guía asume la API de QuestPDF **2024.x–2025.x**. Si la versión es anterior a 2023.4, revisa la sección de compatibilidad al final.
+
+2. **¿Cómo genera hoy el certificado de cesantías?**
+   ```bash
+   grep -rn "Cesantias" --include="*.cs" DOCCB.Application/
+   ```
+   Si ya arma un `IDocument` de QuestPDF, **no dupliques**: la sección 12 explica cómo migrarlo a la base compartida para que herede el mismo header y footer.
+
+3. **¿La licencia está en regla?**
+   QuestPDF es gratis bajo licencia **Community** solo si la organización factura menos de **USD 1M anuales**. Por encima de ese umbral se requiere licencia **Professional / Enterprise** de pago. Para una concesión aeroportuaria esto casi con seguridad aplica. **Confírmalo con el líder técnico antes de subir a producción** — es una decisión de negocio, no técnica.
+
+---
+
+## 📁 Estructura de archivos a crear
 
 ```
-Src/
-├── Application/OpainCB.Application/
-│   ├── Contracts/
-│   │   └── Pdf/
-│   │       ├── IPdfGenerator.cs
-│   │       ├── IPdfDocumentBuilder.cs
-│   │       ├── IPdfAssetProvider.cs
-│   │       └── PdfFile.cs
-│   └── Features/
-│       └── Certificates/
-│           └── Commands/
-│               └── GenerateLaborCertificate/
-│                   ├── GenerateLaborCertificateCommand.cs
-│                   ├── GenerateLaborCertificateCommandHandler.cs
-│                   ├── GenerateLaborCertificateCommandValidator.cs
-│                   └── LaborCertificateModel.cs
+DOCCB.Application/
+├── Features/
+│   ├── Pdf/                                          ⭐ base compartida
+│   │   ├── Assets/
+│   │   │   ├── logo.png                              (header)
+│   │   │   ├── footer-logo.png                       (opcional)
+│   │   │   └── firmas/firma-gerente-gh.png
+│   │   └── Application/
+│   │       ├── Constants/PdfConstants.cs
+│   │       ├── DTOs/
+│   │       │   ├── PdfFileDto.cs
+│   │       │   └── PdfBrandingOptions.cs
+│   │       ├── Interfaces/
+│   │       │   ├── IPdfGeneratorService.cs
+│   │       │   ├── IPdfDocumentBuilder.cs
+│   │       │   └── IPdfAssetProvider.cs
+│   │       ├── Documents/
+│   │       │   ├── BasePdfDocument.cs                ⭐ header + footer para todos
+│   │       │   ├── PdfPalette.cs
+│   │       │   └── Components/
+│   │       │       ├── PdfHeaderComponent.cs
+│   │       │       ├── PdfFooterComponent.cs
+│   │       │       └── SignatureBlockComponent.cs
+│   │       └── Services/
+│   │           ├── PdfGeneratorService.cs
+│   │           └── FileSystemPdfAssetProvider.cs
+│   │
+│   └── Certificates/                                 ⭐ un PDF concreto
+│       └── Application/
+│           ├── DTOs/
+│           │   ├── LaborCertificateRequestDto.cs
+│           │   └── LaborCertificateModel.cs
+│           ├── Documents/
+│           │   ├── LaborCertificateDocument.cs
+│           │   └── LaborCertificateDocumentBuilder.cs
+│           ├── Interfaces/ILaborCertificateService.cs
+│           └── Services/LaborCertificateService.cs
 │
-├── Infrastructure/OpainCB.Infrastructure/
-│   └── Pdf/
-│       ├── Options/
-│       │   └── PdfBrandingOptions.cs
-│       ├── Shared/
-│       │   ├── PdfPalette.cs
-│       │   ├── PdfHeaderComponent.cs
-│       │   ├── PdfFooterComponent.cs
-│       │   ├── SignatureBlockComponent.cs
-│       │   └── BasePdfDocument.cs
-│       ├── Documents/
-│       │   └── LaborCertificate/
-│       │       ├── LaborCertificateDocument.cs
-│       │       └── LaborCertificateDocumentBuilder.cs
-│       ├── FileSystemPdfAssetProvider.cs
-│       └── QuestPdfGenerator.cs
-│
-└── Presentation/OpainCB.WebApp/
-    ├── Assets/Pdf/            (logo.png, firma-*.png, fuentes)
-    └── Controllers/CertificatesController.cs
+└── ApplicationServiceRegistration.cs                 (+ 5 líneas)
+
+WebApp/
+├── Controllers/CertificateController.cs              (+ 1 acción)
+└── appsettings.json                                  (+ sección "Pdf")
 ```
 
 ---
 
-## 2. Paso 1 — Instalar el paquete
+## 🔄 Flujo de datos
 
-Solo en **Infrastructure**:
-
-```bash
-dotnet add Src/Infrastructure/OpainCB.Infrastructure package QuestPDF
 ```
-
-Verifica en `OpainCB.Infrastructure.csproj`:
-
-```xml
-<PackageReference Include="QuestPDF" Version="2025.7.0" />
+┌──────────────────────────────────────────┐
+│  CertificateController.GenerateLabor()   │  ← HTTP + token Azure AD
+└───────────────┬──────────────────────────┘
+                │ LaborCertificateRequestDto
+                ▼
+┌──────────────────────────────────────────┐
+│  ILaborCertificateService                │  ← reglas del certificado
+│   · valida                               │
+│   · IUnitOfWork.Repository<User>()       │
+│   · arma LaborCertificateModel           │
+└───────────────┬──────────────────────────┘
+                │ modelo
+                ▼
+┌──────────────────────────────────────────┐
+│  IPdfGeneratorService                    │  ← único punto de generación
+│   └─ IPdfDocumentBuilder<TModel>         │  ← resuelve logo y firma
+│       └─ BasePdfDocument<TModel>         │  ← header + footer comunes
+│           └─ ComposeContent()            │  ← lo propio de cada PDF
+└───────────────┬──────────────────────────┘
+                │ PdfFileDto (byte[] + nombre)
+                ▼
+        ResponseDto<PdfFileDto>  ó  File(...)
 ```
-
-> Usa la versión estable más reciente. La API descrita aquí corresponde a 2024.x–2025.x.
 
 ---
 
-## 3. Paso 2 — Contratos en Application
+## 1️⃣ Paso 1 — Configuración de marca
 
-### `Contracts/Pdf/PdfFile.cs`
+### `Features/Pdf/Application/DTOs/PdfBrandingOptions.cs`
 
 ```csharp
-namespace OpainCB.Application.Contracts.Pdf;
-
-public sealed record PdfFile(byte[] Content, string FileName)
-{
-    public string ContentType => "application/pdf";
-}
-```
-
-### `Contracts/Pdf/IPdfGenerator.cs`
-
-```csharp
-namespace OpainCB.Application.Contracts.Pdf;
+namespace DOCCB.Application.Features.Pdf.Application.DTOs;
 
 /// <summary>
-/// Punto único de entrada para generar cualquier PDF de la plataforma.
+/// Identidad visual compartida por todos los PDF. Se enlaza desde appsettings.json.
+/// Ningún texto institucional debe quedar quemado en el código.
 /// </summary>
-public interface IPdfGenerator
-{
-    Task<PdfFile> GenerateAsync<TModel>(TModel model, CancellationToken cancellationToken = default)
-        where TModel : class;
-}
-```
-
-### `Contracts/Pdf/IPdfDocumentBuilder.cs`
-
-```csharp
-namespace OpainCB.Application.Contracts.Pdf;
-
-/// <summary>
-/// Cada tipo de PDF implementa este contrato en Infrastructure.
-/// Es el único punto de extensión al agregar un documento nuevo.
-/// </summary>
-public interface IPdfDocumentBuilder<in TModel> where TModel : class
-{
-    /// <summary>Nombre del archivo resultante, p. ej. "certificado-laboral-1032456789.pdf".</summary>
-    string BuildFileName(TModel model);
-
-    /// <summary>Resuelve recursos (logo, firma) y arma el documento. Devuelve object para no exponer QuestPDF.</summary>
-    Task<object> BuildDocumentAsync(TModel model, CancellationToken cancellationToken = default);
-}
-```
-
-> `object` mantiene a `Application` libre de la referencia a QuestPDF. `QuestPdfGenerator` lo castea a `IDocument`. Si prefieres tipado fuerte, mueve `IPdfDocumentBuilder<T>` a Infrastructure y deja en Application solo `IPdfGenerator`: es igual de válido y más limpio en cuanto a tipos.
-
-### `Contracts/Pdf/IPdfAssetProvider.cs`
-
-```csharp
-namespace OpainCB.Application.Contracts.Pdf;
-
-/// <summary>Entrega imágenes (logo, firmas) cacheadas en memoria.</summary>
-public interface IPdfAssetProvider
-{
-    Task<byte[]> GetAsync(string assetKey, CancellationToken cancellationToken = default);
-    Task<byte[]?> GetOrDefaultAsync(string? assetKey, CancellationToken cancellationToken = default);
-}
-```
-
----
-
-## 4. Paso 3 — Configuración de marca (header/footer)
-
-### `Pdf/Options/PdfBrandingOptions.cs` (Infrastructure)
-
-```csharp
-namespace OpainCB.Infrastructure.Pdf.Options;
-
-public sealed class PdfBrandingOptions
+public class PdfBrandingOptions
 {
     public const string SectionName = "Pdf";
 
-    public string AssetsRootPath { get; set; } = "Assets/Pdf";
+    public string AssetsRootPath { get; set; } = "Features/Pdf/Assets";
 
+    // Header: si LogoAssetKey existe se usa la imagen; si no, se cae a CompanyName en texto.
     public string CompanyName { get; set; } = string.Empty;
     public string CompanyDocument { get; set; } = string.Empty;   // NIT
     public string CompanyAddress { get; set; } = string.Empty;
-    public string LogoAssetKey { get; set; } = "logo.png";
+    public string? LogoAssetKey { get; set; }
 
+    // Footer: leyenda en texto + logo opcional en imagen.
     public string FooterLegend { get; set; } = string.Empty;
-    public string? FooterLogoAssetKey { get; set; }               // opcional: footer con imagen
+    public string? FooterLogoAssetKey { get; set; }
     public bool ShowPageNumbers { get; set; } = true;
     public bool ShowGenerationDate { get; set; } = true;
 }
 ```
 
-### `appsettings.json` (WebApp)
+### `WebApp/appsettings.json`
 
 ```json
 "Pdf": {
-  "AssetsRootPath": "Assets/Pdf",
-  "CompanyName": "Sociedad Concesionaria OPAIN S.A.",
-  "CompanyDocument": "NIT 900.105.860-4",
-  "CompanyAddress": "Aeropuerto Internacional El Dorado, Bogotá D.C.",
+  "AssetsRootPath": "Features/Pdf/Assets",
+  "CompanyName": "<Razón social>",
+  "CompanyDocument": "NIT 900.000.000-0",
+  "CompanyAddress": "<Dirección>",
   "LogoAssetKey": "logo.png",
   "FooterLegend": "Documento generado electrónicamente. No requiere firma manuscrita.",
   "FooterLogoAssetKey": null,
@@ -194,29 +186,118 @@ public sealed class PdfBrandingOptions
 }
 ```
 
-Coloca `logo.png` y las firmas en `Src/Presentation/OpainCB.WebApp/Assets/Pdf/` y marca copia al publicar en el `.csproj`:
+### `DOCCB.Application.csproj`
+
+Los assets deben copiarse al output, igual que las plantillas de correo:
 
 ```xml
 <ItemGroup>
-  <Content Include="Assets\Pdf\**" CopyToOutputDirectory="PreserveNewest" />
+  <Content Include="Features\Pdf\Assets\**" CopyToOutputDirectory="PreserveNewest" />
 </ItemGroup>
+```
+
+### `Features/Pdf/Application/Constants/PdfConstants.cs`
+
+```csharp
+namespace DOCCB.Application.Features.Pdf.Application.Constants;
+
+public static class PdfConstants
+{
+    public const string ContentType = "application/pdf";
+    public const string CultureName = "es-CO";
+    public const string AssetNotFound = "No se encontró el recurso gráfico del PDF: {0}";
+}
 ```
 
 ---
 
-## 5. Paso 4 — Proveedor de imágenes con caché
+## 2️⃣ Paso 2 — Contratos
 
-### `Pdf/FileSystemPdfAssetProvider.cs`
+### `Features/Pdf/Application/DTOs/PdfFileDto.cs`
 
 ```csharp
+using DOCCB.Application.Features.Pdf.Application.Constants;
+
+namespace DOCCB.Application.Features.Pdf.Application.DTOs;
+
+public class PdfFileDto
+{
+    public byte[] Content { get; set; } = [];
+    public string FileName { get; set; } = string.Empty;
+    public string ContentType => PdfConstants.ContentType;
+
+    /// <summary>Para responder dentro de ResponseDto sin romper el envelope de la API.</summary>
+    public string ToBase64() => Convert.ToBase64String(Content);
+}
+```
+
+### `Features/Pdf/Application/Interfaces/IPdfGeneratorService.cs`
+
+```csharp
+using DOCCB.Application.Features.Pdf.Application.DTOs;
+
+namespace DOCCB.Application.Features.Pdf.Application.Interfaces;
+
+/// <summary>Punto único de generación de PDF de la plataforma.</summary>
+public interface IPdfGeneratorService
+{
+    Task<PdfFileDto> GenerateAsync<TModel>(TModel model, CancellationToken cancellationToken = default)
+        where TModel : class;
+}
+```
+
+### `Features/Pdf/Application/Interfaces/IPdfDocumentBuilder.cs`
+
+```csharp
+using QuestPDF.Infrastructure;
+
+namespace DOCCB.Application.Features.Pdf.Application.Interfaces;
+
+/// <summary>
+/// Cada tipo de PDF implementa este contrato. Es el ÚNICO punto de extensión
+/// al agregar un documento nuevo.
+/// </summary>
+public interface IPdfDocumentBuilder<in TModel> where TModel : class
+{
+    /// <summary>Nombre del archivo resultante, p. ej. "certificado-laboral-1032456789.pdf".</summary>
+    string BuildFileName(TModel model);
+
+    /// <summary>Resuelve los recursos gráficos (async) y arma el documento.</summary>
+    Task<IDocument> BuildDocumentAsync(TModel model, CancellationToken cancellationToken = default);
+}
+```
+
+### `Features/Pdf/Application/Interfaces/IPdfAssetProvider.cs`
+
+```csharp
+namespace DOCCB.Application.Features.Pdf.Application.Interfaces;
+
+/// <summary>Entrega imágenes (logo, firmas) cacheadas en memoria.</summary>
+public interface IPdfAssetProvider
+{
+    Task<byte[]> GetAsync(string assetKey, CancellationToken cancellationToken = default);
+
+    /// <summary>Devuelve null si la clave es nula o el archivo no existe (logo o firma opcionales).</summary>
+    Task<byte[]?> GetOrDefaultAsync(string? assetKey, CancellationToken cancellationToken = default);
+}
+```
+
+---
+
+## 3️⃣ Paso 3 — Proveedor de imágenes con caché
+
+### `Features/Pdf/Application/Services/FileSystemPdfAssetProvider.cs`
+
+```csharp
+using DOCCB.Application.Features.Pdf.Application.Constants;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.Interfaces;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
-using OpainCB.Application.Contracts.Pdf;
-using OpainCB.Infrastructure.Pdf.Options;
 
-namespace OpainCB.Infrastructure.Pdf;
+namespace DOCCB.Application.Features.Pdf.Application.Services;
 
-internal sealed class FileSystemPdfAssetProvider : IPdfAssetProvider
+public class FileSystemPdfAssetProvider : IPdfAssetProvider
 {
     private readonly IMemoryCache _cache;
     private readonly string _root;
@@ -230,7 +311,7 @@ internal sealed class FileSystemPdfAssetProvider : IPdfAssetProvider
     public async Task<byte[]> GetAsync(string assetKey, CancellationToken cancellationToken = default)
     {
         var asset = await GetOrDefaultAsync(assetKey, cancellationToken);
-        return asset ?? throw new FileNotFoundException($"Recurso PDF no encontrado: {assetKey}");
+        return asset ?? throw new FileNotFoundException(string.Format(PdfConstants.AssetNotFound, assetKey));
     }
 
     public async Task<byte[]?> GetOrDefaultAsync(string? assetKey, CancellationToken cancellationToken = default)
@@ -238,14 +319,16 @@ internal sealed class FileSystemPdfAssetProvider : IPdfAssetProvider
         if (string.IsNullOrWhiteSpace(assetKey))
             return null;
 
-        // Evita path traversal: solo se admite el nombre del archivo.
-        var safeKey = Path.GetFileName(assetKey);
+        // Se admite subcarpeta (firmas/x.png) pero se bloquea el path traversal.
+        var relativeKey = assetKey.Replace('\\', '/').TrimStart('/');
+        if (relativeKey.Contains(".."))
+            return null;
 
-        return await _cache.GetOrCreateAsync($"pdf-asset:{safeKey}", async entry =>
+        return await _cache.GetOrCreateAsync($"pdf-asset:{relativeKey}", async entry =>
         {
             entry.SlidingExpiration = TimeSpan.FromHours(1);
 
-            var path = Path.Combine(_root, safeKey);
+            var path = Path.Combine(_root, relativeKey.Replace('/', Path.DirectorySeparatorChar));
             return File.Exists(path)
                 ? await File.ReadAllBytesAsync(path, cancellationToken)
                 : null;
@@ -254,21 +337,20 @@ internal sealed class FileSystemPdfAssetProvider : IPdfAssetProvider
 }
 ```
 
-> Si las firmas se guardan en base de datos o en un blob storage, crea otra implementación de `IPdfAssetProvider` y cambia solo el registro en DI.
+> Si mañana las firmas se guardan en base de datos o en DocManager, creas otra implementación de `IPdfAssetProvider` y cambias **una sola línea** de DI. El resto del código no se entera.
 
 ---
 
-## 6. Paso 5 — Componentes compartidos (header, footer, firma)
+## 4️⃣ Paso 4 — Paleta y componentes compartidos
 
-### `Pdf/Shared/PdfPalette.cs`
+### `Features/Pdf/Application/Documents/PdfPalette.cs`
 
 ```csharp
 using QuestPDF.Helpers;
-using QuestPDF.Infrastructure;
 
-namespace OpainCB.Infrastructure.Pdf.Shared;
+namespace DOCCB.Application.Features.Pdf.Application.Documents;
 
-internal static class PdfPalette
+public static class PdfPalette
 {
     public const string Primary = "#004B87";
     public const string Text = "#1F2933";
@@ -279,18 +361,18 @@ internal static class PdfPalette
 }
 ```
 
-### `Pdf/Shared/PdfHeaderComponent.cs`
+### `Features/Pdf/Application/Documents/Components/PdfHeaderComponent.cs`
 
-Header común a **todos** los documentos: logo a la izquierda, datos de la empresa a la derecha, línea divisoria.
+Header común a **todos** los documentos. Acepta **imagen o texto**: si no hay logo cargado, muestra el nombre de la compañía.
 
 ```csharp
-using OpainCB.Infrastructure.Pdf.Options;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 
-namespace OpainCB.Infrastructure.Pdf.Shared;
+namespace DOCCB.Application.Features.Pdf.Application.Documents.Components;
 
-internal sealed class PdfHeaderComponent : IComponent
+public class PdfHeaderComponent : IComponent
 {
     private readonly PdfBrandingOptions _branding;
     private readonly byte[]? _logo;
@@ -309,10 +391,12 @@ internal sealed class PdfHeaderComponent : IComponent
         {
             column.Item().Row(row =>
             {
+                // Imagen si existe; si no, texto. El ancho reservado es el mismo en ambos casos.
                 if (_logo is not null)
-                    row.ConstantItem(120).Height(45).Image(_logo).FitArea();
+                    row.ConstantItem(130).Height(45).AlignLeft().AlignMiddle().Image(_logo).FitArea();
                 else
-                    row.ConstantItem(120).Text(_branding.CompanyName).Bold().FontColor(PdfPalette.Primary);
+                    row.ConstantItem(130).AlignMiddle().Text(_branding.CompanyName)
+                        .FontSize(12).Bold().FontColor(PdfPalette.Primary);
 
                 row.RelativeItem().AlignRight().Column(info =>
                 {
@@ -326,10 +410,8 @@ internal sealed class PdfHeaderComponent : IComponent
             });
 
             if (!string.IsNullOrWhiteSpace(_documentTitle))
-            {
                 column.Item().PaddingTop(6).Text(_documentTitle!)
                     .FontSize(9).SemiBold().FontColor(PdfPalette.Muted);
-            }
 
             column.Item().PaddingTop(8).LineHorizontal(1).LineColor(PdfPalette.Line);
         });
@@ -337,18 +419,18 @@ internal sealed class PdfHeaderComponent : IComponent
 }
 ```
 
-### `Pdf/Shared/PdfFooterComponent.cs`
+### `Features/Pdf/Application/Documents/Components/PdfFooterComponent.cs`
 
-Footer común: leyenda (texto), logo opcional (imagen), fecha de generación y paginación.
+Footer común: logo opcional (imagen), leyenda (texto), fecha de generación y paginación.
 
 ```csharp
-using OpainCB.Infrastructure.Pdf.Options;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 
-namespace OpainCB.Infrastructure.Pdf.Shared;
+namespace DOCCB.Application.Features.Pdf.Application.Documents.Components;
 
-internal sealed class PdfFooterComponent : IComponent
+public class PdfFooterComponent : IComponent
 {
     private readonly PdfBrandingOptions _branding;
     private readonly byte[]? _footerLogo;
@@ -370,12 +452,13 @@ internal sealed class PdfFooterComponent : IComponent
             column.Item().Row(row =>
             {
                 if (_footerLogo is not null)
-                    row.ConstantItem(60).Height(20).Image(_footerLogo).FitArea();
+                    row.ConstantItem(60).Height(20).AlignMiddle().Image(_footerLogo).FitArea();
 
-                row.RelativeItem().Column(left =>
+                row.RelativeItem().PaddingLeft(_footerLogo is not null ? 8 : 0).Column(left =>
                 {
                     if (!string.IsNullOrWhiteSpace(_branding.FooterLegend))
-                        left.Item().Text(_branding.FooterLegend).FontSize(7).FontColor(PdfPalette.Muted);
+                        left.Item().Text(_branding.FooterLegend)
+                            .FontSize(7).FontColor(PdfPalette.Muted);
 
                     if (_branding.ShowGenerationDate)
                         left.Item().Text($"Generado el {_generatedAt:dd/MM/yyyy HH:mm}")
@@ -399,27 +482,28 @@ internal sealed class PdfFooterComponent : IComponent
 }
 ```
 
-### `Pdf/Shared/SignatureBlockComponent.cs`
+### `Features/Pdf/Application/Documents/Components/SignatureBlockComponent.cs`
 
-Bloque de firma reutilizable: imagen de la firma sobre la línea, nombre y cargo debajo. Si no hay imagen, deja el espacio en blanco para firma manuscrita.
+Bloque de firma reutilizable: **espacio para la foto de la firma** sobre la línea, nombre y cargo debajo.
 
 ```csharp
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 
-namespace OpainCB.Infrastructure.Pdf.Shared;
+namespace DOCCB.Application.Features.Pdf.Application.Documents.Components;
 
-internal sealed class SignatureBlockComponent : IComponent
+public class SignatureBlockComponent : IComponent
 {
+    private const float BlockWidth = 210f;
     private const float SignatureHeight = 60f;
-    private const float SignatureWidth = 200f;
 
     private readonly byte[]? _signatureImage;
     private readonly string _signerName;
     private readonly string _signerPosition;
     private readonly string? _extraLine;
 
-    public SignatureBlockComponent(byte[]? signatureImage, string signerName, string signerPosition, string? extraLine = null)
+    public SignatureBlockComponent(
+        byte[]? signatureImage, string signerName, string signerPosition, string? extraLine = null)
     {
         _signatureImage = signatureImage;
         _signerName = signerName;
@@ -429,17 +513,17 @@ internal sealed class SignatureBlockComponent : IComponent
 
     public void Compose(IContainer container)
     {
-        container.Width(SignatureWidth).Column(column =>
+        container.Width(BlockWidth).Column(column =>
         {
-            // El alto es fijo haya o no imagen: así la línea de firma nunca "salta".
-            column.Item().Height(SignatureHeight).AlignBottom().AlignCenter()
-                .Element(area =>
-                {
-                    if (_signatureImage is not null)
-                        area.Image(_signatureImage).FitArea();
-                    else
-                        area.Text(string.Empty);
-                });
+            // Alto fijo haya o no imagen: así la línea de firma nunca se desplaza
+            // y el documento se ve igual con firma digital o para firma manuscrita.
+            column.Item().Height(SignatureHeight).AlignBottom().AlignCenter().Element(area =>
+            {
+                if (_signatureImage is not null)
+                    area.Image(_signatureImage).FitArea();
+                else
+                    area.Text(string.Empty);
+            });
 
             column.Item().PaddingTop(2).LineHorizontal(1).LineColor(PdfPalette.Text);
 
@@ -455,21 +539,22 @@ internal sealed class SignatureBlockComponent : IComponent
 
 ---
 
-## 7. Paso 6 — Documento base (el corazón de la reutilización)
+## 5️⃣ Paso 5 — Documento base (el corazón de la reutilización)
 
-`BasePdfDocument<TModel>` fija página, header y footer. Cada documento concreto solo implementa `ComposeContent`.
+`BasePdfDocument<TModel>` aplica **Template Method**: fija página, márgenes, header y footer, y deja abstracto únicamente el contenido.
 
-### `Pdf/Shared/BasePdfDocument.cs`
+### `Features/Pdf/Application/Documents/BasePdfDocument.cs`
 
 ```csharp
-using OpainCB.Infrastructure.Pdf.Options;
+using DOCCB.Application.Features.Pdf.Application.Documents.Components;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
 
-namespace OpainCB.Infrastructure.Pdf.Shared;
+namespace DOCCB.Application.Features.Pdf.Application.Documents;
 
-internal abstract class BasePdfDocument<TModel> : IDocument where TModel : class
+public abstract class BasePdfDocument<TModel> : IDocument where TModel : class
 {
     protected TModel Model { get; }
     protected PdfBrandingOptions Branding { get; }
@@ -491,7 +576,7 @@ internal abstract class BasePdfDocument<TModel> : IDocument where TModel : class
         GeneratedAt = generatedAt;
     }
 
-    /// <summary>Título del documento (metadatos y subtítulo del header).</summary>
+    /// <summary>Título del documento: metadatos del PDF y subtítulo opcional del header.</summary>
     protected abstract string DocumentTitle { get; }
 
     // Puntos de ajuste opcionales por documento.
@@ -527,59 +612,133 @@ internal abstract class BasePdfDocument<TModel> : IDocument where TModel : class
         });
     }
 
-    /// <summary>Lo único que cada documento debe implementar.</summary>
+    /// <summary>Lo ÚNICO que cada documento concreto debe implementar.</summary>
     protected abstract void ComposeContent(IContainer container);
 
     protected virtual TextStyle ComposeDefaultTextStyle(TextStyle style) =>
-        style.FontFamily(PdfPalette.FontFamily).FontSize(11).FontColor(PdfPalette.Text).LineHeight(1.4f);
+        style.FontFamily(PdfPalette.FontFamily)
+             .FontSize(11)
+             .FontColor(PdfPalette.Text)
+             .LineHeight(1.4f);
 }
 ```
 
 ---
 
-## 8. Paso 7 — El documento concreto: certificado laboral
+## 6️⃣ Paso 6 — Servicio generador
 
-### `Features/.../LaborCertificateModel.cs` (Application)
+### `Features/Pdf/Application/Services/PdfGeneratorService.cs`
 
 ```csharp
-namespace OpainCB.Application.Features.Certificates.Commands.GenerateLaborCertificate;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.Interfaces;
+using Microsoft.Extensions.DependencyInjection;
+using QuestPDF.Fluent;
 
-public sealed class LaborCertificateModel
+namespace DOCCB.Application.Features.Pdf.Application.Services;
+
+public class PdfGeneratorService : IPdfGeneratorService
 {
-    public required string EmployeeFullName { get; init; }
-    public required string EmployeeDocument { get; init; }
-    public required string Position { get; init; }
-    public required string ContractType { get; init; }
-    public required DateOnly HireDate { get; init; }
-    public DateOnly? TerminationDate { get; init; }
-    public decimal MonthlySalary { get; init; }
-    public string? AddressedTo { get; init; }
+    private readonly IServiceProvider _serviceProvider;
+
+    public PdfGeneratorService(IServiceProvider serviceProvider) => _serviceProvider = serviceProvider;
+
+    public async Task<PdfFileDto> GenerateAsync<TModel>(
+        TModel model, CancellationToken cancellationToken = default) where TModel : class
+    {
+        // Resuelve el builder registrado para este modelo. Si falta el registro,
+        // el error es explícito y aparece en el primer intento, no en producción.
+        var builder = _serviceProvider.GetService<IPdfDocumentBuilder<TModel>>()
+            ?? throw new InvalidOperationException(
+                $"No hay un IPdfDocumentBuilder<{typeof(TModel).Name}> registrado en ApplicationServiceRegistration.");
+
+        var document = await builder.BuildDocumentAsync(model, cancellationToken);
+
+        // GeneratePdf() es síncrono y CPU-bound: se saca del hilo del request.
+        var content = await Task.Run(document.GeneratePdf, cancellationToken);
+
+        return new PdfFileDto
+        {
+            Content = content,
+            FileName = builder.BuildFileName(model)
+        };
+    }
+}
+```
+
+---
+
+## 7️⃣ Paso 7 — El certificado laboral: modelo y DTO de entrada
+
+### `Features/Certificates/Application/DTOs/LaborCertificateRequestDto.cs`
+
+```csharp
+namespace DOCCB.Application.Features.Certificates.Application.DTOs;
+
+/// <summary>Lo que llega desde la API.</summary>
+public class LaborCertificateRequestDto
+{
+    /// <summary>Opcional: si es nulo, se genera para el usuario autenticado.</summary>
+    public int? UserId { get; set; }
+
+    /// <summary>"A quien interese" si viene vacío.</summary>
+    public string? AddressedTo { get; set; }
+
+    public bool IncludeSalary { get; set; } = true;
+}
+```
+
+### `Features/Certificates/Application/DTOs/LaborCertificateModel.cs`
+
+```csharp
+namespace DOCCB.Application.Features.Certificates.Application.DTOs;
+
+/// <summary>Modelo ya resuelto que consume el documento PDF. No conoce entidades de dominio.</summary>
+public class LaborCertificateModel
+{
+    public string EmployeeFullName { get; set; } = string.Empty;
+    public string EmployeeDocument { get; set; } = string.Empty;
+    public string Position { get; set; } = string.Empty;
+    public string ContractType { get; set; } = string.Empty;
+    public DateOnly HireDate { get; set; }
+    public DateOnly? TerminationDate { get; set; }
+    public decimal? MonthlySalary { get; set; }
+    public string? AddressedTo { get; set; }
+    public string City { get; set; } = "Bogotá D.C.";
+    public DateOnly IssueDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
 
     // Firma
-    public required string SignerName { get; init; }
-    public required string SignerPosition { get; init; }
-    public string? SignerSignatureAssetKey { get; init; }   // p. ej. "firma-gerente-rrhh.png"
+    public string SignerName { get; set; } = string.Empty;
+    public string SignerPosition { get; set; } = string.Empty;
+    public string? SignerSignatureAssetKey { get; set; }   // "firmas/firma-gerente-gh.png"
 
-    public DateOnly IssueDate { get; init; } = DateOnly.FromDateTime(DateTime.Today);
     public bool IsActiveEmployee => TerminationDate is null;
 }
 ```
 
-### `Pdf/Documents/LaborCertificate/LaborCertificateDocument.cs` (Infrastructure)
+---
+
+## 8️⃣ Paso 8 — El documento concreto
+
+### `Features/Certificates/Application/Documents/LaborCertificateDocument.cs`
+
+Fíjate en lo que **no** está aquí: ni header, ni footer, ni paginación, ni márgenes. Todo eso lo pone la base.
 
 ```csharp
 using System.Globalization;
-using OpainCB.Application.Features.Certificates.Commands.GenerateLaborCertificate;
-using OpainCB.Infrastructure.Pdf.Options;
-using OpainCB.Infrastructure.Pdf.Shared;
+using DOCCB.Application.Features.Certificates.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.Constants;
+using DOCCB.Application.Features.Pdf.Application.Documents;
+using DOCCB.Application.Features.Pdf.Application.Documents.Components;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 
-namespace OpainCB.Infrastructure.Pdf.Documents.LaborCertificate;
+namespace DOCCB.Application.Features.Certificates.Application.Documents;
 
-internal sealed class LaborCertificateDocument : BasePdfDocument<LaborCertificateModel>
+public class LaborCertificateDocument : BasePdfDocument<LaborCertificateModel>
 {
-    private static readonly CultureInfo Culture = new("es-CO");
+    private static readonly CultureInfo Culture = new(PdfConstants.CultureName);
     private readonly byte[]? _signatureImage;
 
     public LaborCertificateDocument(
@@ -595,7 +754,7 @@ internal sealed class LaborCertificateDocument : BasePdfDocument<LaborCertificat
     }
 
     protected override string DocumentTitle => "Certificación laboral";
-    protected override bool ShowTitleInHeader => false;   // el título va grande en el contenido
+    protected override bool ShowTitleInHeader => false;   // el título va grande dentro del contenido
 
     protected override void ComposeContent(IContainer container)
     {
@@ -604,39 +763,40 @@ internal sealed class LaborCertificateDocument : BasePdfDocument<LaborCertificat
             column.Spacing(14);
 
             column.Item().AlignCenter().Text("CERTIFICACIÓN LABORAL")
-                .FontSize(14).Bold().FontColor(PdfPalette.Primary).LetterSpacing(0.05f);
+                .FontSize(14).Bold().FontColor(PdfPalette.Primary);
 
             column.Item().AlignRight().Text(
-                $"Bogotá D.C., {Model.IssueDate.ToString("d 'de' MMMM 'de' yyyy", Culture)}");
+                $"{Model.City}, {Model.IssueDate.ToString("d 'de' MMMM 'de' yyyy", Culture)}");
 
             column.Item().Text(string.IsNullOrWhiteSpace(Model.AddressedTo)
                 ? "A QUIEN INTERESE:"
-                : $"Señores {Model.AddressedTo!.ToUpperInvariant()}:").Bold();
+                : $"Señores {Model.AddressedTo!.ToUpper(Culture)}:").Bold();
 
-            column.Item().Text(ComposeBodyText).Justify();
+            column.Item().Text(BuildBodyText()).Justify();
 
             column.Item().Element(ComposeDetailTable);
 
             column.Item().Text(
                 "La presente certificación se expide a solicitud del interesado, " +
-                "a los fines que estime convenientes.").Justify();
+                "para los fines que estime convenientes.").Justify();
 
             column.Item().PaddingTop(30).Element(ComposeSignature);
         });
     }
 
-    private string ComposeBodyText()
+    private string BuildBodyText()
     {
         var verb = Model.IsActiveEmployee ? "labora actualmente" : "laboró";
+
         var period = Model.IsActiveEmployee
             ? $"desde el {Model.HireDate.ToString("d 'de' MMMM 'de' yyyy", Culture)}"
             : $"entre el {Model.HireDate.ToString("d 'de' MMMM 'de' yyyy", Culture)} " +
               $"y el {Model.TerminationDate!.Value.ToString("d 'de' MMMM 'de' yyyy", Culture)}";
 
-        return $"{Branding.CompanyName}, identificada con {Branding.CompanyDocument}, " +
-               $"certifica que el(la) señor(a) {Model.EmployeeFullName}, identificado(a) con documento " +
-               $"No. {Model.EmployeeDocument}, {verb} en esta compañía {period}, " +
-               $"desempeñando el cargo de {Model.Position} mediante {Model.ContractType}.";
+        return $"{Branding.CompanyName}, identificada con {Branding.CompanyDocument}, certifica que " +
+               $"el(la) señor(a) {Model.EmployeeFullName}, identificado(a) con documento No. " +
+               $"{Model.EmployeeDocument}, {verb} en esta compañía {period}, desempeñando el cargo de " +
+               $"{Model.Position} mediante {Model.ContractType}.";
     }
 
     private void ComposeDetailTable(IContainer container)
@@ -644,6 +804,7 @@ internal sealed class LaborCertificateDocument : BasePdfDocument<LaborCertificat
         container.Border(1).BorderColor(PdfPalette.Line).Padding(10).Column(column =>
         {
             column.Spacing(4);
+
             AddRow(column, "Cargo", Model.Position);
             AddRow(column, "Tipo de contrato", Model.ContractType);
             AddRow(column, "Fecha de ingreso", Model.HireDate.ToString("dd/MM/yyyy"));
@@ -651,8 +812,8 @@ internal sealed class LaborCertificateDocument : BasePdfDocument<LaborCertificat
             if (Model.TerminationDate is not null)
                 AddRow(column, "Fecha de retiro", Model.TerminationDate.Value.ToString("dd/MM/yyyy"));
 
-            if (Model.MonthlySalary > 0)
-                AddRow(column, "Salario mensual", Model.MonthlySalary.ToString("C0", Culture));
+            if (Model.MonthlySalary is > 0)
+                AddRow(column, "Salario mensual", Model.MonthlySalary.Value.ToString("C0", Culture));
         });
 
         static void AddRow(ColumnDescriptor column, string label, string value) =>
@@ -663,111 +824,184 @@ internal sealed class LaborCertificateDocument : BasePdfDocument<LaborCertificat
             });
     }
 
-    private void ComposeSignature(IContainer container)
-    {
-        // AlignLeft/AlignCenter según el formato institucional.
-        container.AlignLeft().Component(
-            new SignatureBlockComponent(
-                _signatureImage,
-                Model.SignerName,
-                Model.SignerPosition,
-                Branding.CompanyName));
-    }
+    private void ComposeSignature(IContainer container) =>
+        container.AlignLeft().Component(new SignatureBlockComponent(
+            _signatureImage,
+            Model.SignerName,
+            Model.SignerPosition,
+            Branding.CompanyName));
 }
 ```
 
-> **Nota sobre `column.Item().Text(ComposeBodyText)`**: el `Text()` recibe el string ya construido; se usa el método para no ensuciar el `Compose`. Si tu versión de QuestPDF no acepta el grupo de métodos, escribe `column.Item().Text(ComposeBodyText()).Justify();`.
+### `Features/Certificates/Application/Documents/LaborCertificateDocumentBuilder.cs`
 
-### `Pdf/Documents/LaborCertificate/LaborCertificateDocumentBuilder.cs`
-
-Aquí se resuelven las imágenes (async) y se arma el documento.
+Aquí se cargan las imágenes (operación async) y se arma el documento.
 
 ```csharp
+using DOCCB.Application.Features.Certificates.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.Interfaces;
 using Microsoft.Extensions.Options;
-using OpainCB.Application.Contracts.Pdf;
-using OpainCB.Application.Features.Certificates.Commands.GenerateLaborCertificate;
-using OpainCB.Infrastructure.Pdf.Options;
+using QuestPDF.Infrastructure;
 
-namespace OpainCB.Infrastructure.Pdf.Documents.LaborCertificate;
+namespace DOCCB.Application.Features.Certificates.Application.Documents;
 
-internal sealed class LaborCertificateDocumentBuilder : IPdfDocumentBuilder<LaborCertificateModel>
+public class LaborCertificateDocumentBuilder : IPdfDocumentBuilder<LaborCertificateModel>
 {
     private readonly IPdfAssetProvider _assets;
     private readonly PdfBrandingOptions _branding;
-    private readonly TimeProvider _time;
+    private readonly TimeProvider _timeProvider;
 
     public LaborCertificateDocumentBuilder(
         IPdfAssetProvider assets,
         IOptions<PdfBrandingOptions> branding,
-        TimeProvider time)
+        TimeProvider timeProvider)
     {
         _assets = assets;
         _branding = branding.Value;
-        _time = time;
+        _timeProvider = timeProvider;
     }
 
     public string BuildFileName(LaborCertificateModel model) =>
         $"certificado-laboral-{model.EmployeeDocument}-{model.IssueDate:yyyyMMdd}.pdf";
 
-    public async Task<object> BuildDocumentAsync(LaborCertificateModel model, CancellationToken cancellationToken = default)
+    public async Task<IDocument> BuildDocumentAsync(
+        LaborCertificateModel model, CancellationToken cancellationToken = default)
     {
         var headerLogo = await _assets.GetOrDefaultAsync(_branding.LogoAssetKey, cancellationToken);
         var footerLogo = await _assets.GetOrDefaultAsync(_branding.FooterLogoAssetKey, cancellationToken);
-        var signature  = await _assets.GetOrDefaultAsync(model.SignerSignatureAssetKey, cancellationToken);
+        var signature = await _assets.GetOrDefaultAsync(model.SignerSignatureAssetKey, cancellationToken);
 
         return new LaborCertificateDocument(
-            model, _branding, headerLogo, footerLogo, signature, _time.GetLocalNow());
+            model, _branding, headerLogo, footerLogo, signature, _timeProvider.GetLocalNow());
     }
 }
 ```
 
 ---
 
-## 9. Paso 8 — El generador y el registro en DI
+## 9️⃣ Paso 9 — Servicio de la feature
 
-### `Pdf/QuestPdfGenerator.cs`
+Sigue el patrón de DOCCB: interfaz + servicio + `IUnitOfWork`, sin tocar el `DbContext`.
+
+### `Features/Certificates/Application/Interfaces/ILaborCertificateService.cs`
 
 ```csharp
-using Microsoft.Extensions.DependencyInjection;
-using OpainCB.Application.Contracts.Pdf;
-using QuestPDF.Fluent;
-using QuestPDF.Infrastructure;
+using DOCCB.Application.Features.Certificates.Application.DTOs;
+using DOCCB.Application.Features.Common.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
 
-namespace OpainCB.Infrastructure.Pdf;
+namespace DOCCB.Application.Features.Certificates.Application.Interfaces;
 
-internal sealed class QuestPdfGenerator : IPdfGenerator
+public interface ILaborCertificateService
 {
-    private readonly IServiceProvider _serviceProvider;
+    Task<ResponseDto<PdfFileDto>> GenerateAsync(
+        LaborCertificateRequestDto request, int requestingUserId, CancellationToken cancellationToken = default);
+}
+```
 
-    public QuestPdfGenerator(IServiceProvider serviceProvider) => _serviceProvider = serviceProvider;
+### `Features/Certificates/Application/Services/LaborCertificateService.cs`
 
-    public async Task<PdfFile> GenerateAsync<TModel>(TModel model, CancellationToken cancellationToken = default)
-        where TModel : class
+```csharp
+using DOCCB.Application.Contracts.Persistence;
+using DOCCB.Application.Features.Certificates.Application.DTOs;
+using DOCCB.Application.Features.Certificates.Application.Interfaces;
+using DOCCB.Application.Features.Common.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.DTOs;
+using DOCCB.Application.Features.Pdf.Application.Interfaces;
+using DOCCB.Domain.Entities;
+using Microsoft.Extensions.Configuration;
+
+namespace DOCCB.Application.Features.Certificates.Application.Services;
+
+public class LaborCertificateService : ILaborCertificateService
+{
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly IPdfGeneratorService _pdfGenerator;
+    private readonly IConfiguration _configuration;
+
+    public LaborCertificateService(
+        IUnitOfWork unitOfWork,
+        IPdfGeneratorService pdfGenerator,
+        IConfiguration configuration)
     {
-        var builder = _serviceProvider.GetRequiredService<IPdfDocumentBuilder<TModel>>();
+        _unitOfWork = unitOfWork;
+        _pdfGenerator = pdfGenerator;
+        _configuration = configuration;
+    }
 
-        var built = await builder.BuildDocumentAsync(model, cancellationToken);
+    public async Task<ResponseDto<PdfFileDto>> GenerateAsync(
+        LaborCertificateRequestDto request,
+        int requestingUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var userId = request.UserId ?? requestingUserId;
 
-        if (built is not IDocument document)
-            throw new InvalidOperationException(
-                $"El builder de {typeof(TModel).Name} no devolvió un IDocument de QuestPDF.");
+        var user = await _unitOfWork.Repository<User>().GetByIdAsync(userId);
+        if (user is null)
+            return ResponseDto<PdfFileDto>.Fail("El usuario no existe.");
 
-        // GeneratePdf es CPU-bound y síncrono: se saca del hilo de request.
-        var bytes = await Task.Run(document.GeneratePdf, cancellationToken);
+        if (user.HireDate is null)
+            return ResponseDto<PdfFileDto>.Fail(
+                "El usuario no tiene fecha de ingreso registrada; no es posible emitir el certificado.");
 
-        return new PdfFile(bytes, builder.BuildFileName(model));
+        var model = new LaborCertificateModel
+        {
+            EmployeeFullName = $"{user.FirstName} {user.LastName}".Trim(),
+            EmployeeDocument = user.DocumentNumber,
+            Position = user.Position,
+            ContractType = user.ContractType,
+            HireDate = DateOnly.FromDateTime(user.HireDate.Value),
+            TerminationDate = user.TerminationDate is null
+                ? null
+                : DateOnly.FromDateTime(user.TerminationDate.Value),
+            MonthlySalary = request.IncludeSalary ? user.Salary : null,
+            AddressedTo = request.AddressedTo,
+
+            // El firmante sale de configuración, no del código.
+            SignerName = _configuration["Pdf:Signers:LaborCertificate:Name"] ?? string.Empty,
+            SignerPosition = _configuration["Pdf:Signers:LaborCertificate:Position"] ?? string.Empty,
+            SignerSignatureAssetKey = _configuration["Pdf:Signers:LaborCertificate:SignatureAssetKey"]
+        };
+
+        var file = await _pdfGenerator.GenerateAsync(model, cancellationToken);
+
+        return ResponseDto<PdfFileDto>.Ok(file);
     }
 }
 ```
 
-### Registro en `InfrastructureServiceRegistration.cs`
+> ⚠️ **Ajusta dos cosas a lo que ya existe en el repo:**
+> 1. Los nombres de propiedades de `User` (`FirstName`, `DocumentNumber`, `HireDate`, `Position`, `Salary`…) — usa los reales de `DOCCB.Domain/Entities/User.cs`.
+> 2. La firma de `ResponseDto` — si no tiene helpers `Ok`/`Fail`, constrúyelo como lo hacen los demás servicios y apóyate en `ApiResponseConstants`.
+
+Agrega al `appsettings.json`:
+
+```json
+"Pdf": {
+  "Signers": {
+    "LaborCertificate": {
+      "Name": "<Nombre del firmante>",
+      "Position": "Gerente de Gestión Humana",
+      "SignatureAssetKey": "firmas/firma-gerente-gh.png"
+    }
+  }
+}
+```
+
+---
+
+## 🔟 Paso 10 — Registro de dependencias
+
+En `DOCCB.Application/ApplicationServiceRegistration.cs`:
 
 ```csharp
-public static IServiceCollection AddInfrastructureServices(
+public static IServiceCollection AddApplicationServices(
     this IServiceCollection services, IConfiguration configuration)
 {
     // ... registros existentes
 
+    // ── PDF: base compartida ──────────────────────────────────────────
     QuestPDF.Settings.License = LicenseType.Community;   // cambiar si se adquiere licencia comercial
 
     services.Configure<PdfBrandingOptions>(configuration.GetSection(PdfBrandingOptions.SectionName));
@@ -775,174 +1009,116 @@ public static IServiceCollection AddInfrastructureServices(
     services.TryAddSingleton(TimeProvider.System);
 
     services.AddSingleton<IPdfAssetProvider, FileSystemPdfAssetProvider>();
-    services.AddScoped<IPdfGenerator, QuestPdfGenerator>();
+    services.AddScoped<IPdfGeneratorService, PdfGeneratorService>();
 
-    // Un registro por cada tipo de PDF:
+    // ── Un registro por cada tipo de PDF ──────────────────────────────
     services.AddScoped<IPdfDocumentBuilder<LaborCertificateModel>, LaborCertificateDocumentBuilder>();
+
+    // ── Servicios de feature ──────────────────────────────────────────
+    services.AddScoped<ILaborCertificateService, LaborCertificateService>();
 
     return services;
 }
 ```
 
-Opcional, para fuentes propias (recomendado si el contenedor es Linux):
-
-```csharp
-using var fontStream = File.OpenRead(Path.Combine(AppContext.BaseDirectory, "Assets/Pdf/Fonts/Roboto-Regular.ttf"));
-FontManager.RegisterFont(fontStream);
-```
+> Si `AddApplicationServices` hoy no recibe `IConfiguration`, agrégale el parámetro y actualiza la llamada en `Program.cs`.
+> `TryAddSingleton` requiere `using Microsoft.Extensions.DependencyInjection.Extensions;`.
 
 ---
 
-## 10. Paso 9 — Feature (MediatR) en Application
+## 1️⃣1️⃣ Paso 11 — Endpoint
 
-### `GenerateLaborCertificateCommand.cs`
-
-```csharp
-using MediatR;
-using OpainCB.Application.Contracts.Pdf;
-
-namespace OpainCB.Application.Features.Certificates.Commands.GenerateLaborCertificate;
-
-public sealed record GenerateLaborCertificateCommand(string EmployeeDocument, string? AddressedTo)
-    : IRequest<PdfFile>;
-```
-
-### `GenerateLaborCertificateCommandHandler.cs`
+En `WebApp/Controllers/CertificateController.cs`:
 
 ```csharp
-using MediatR;
-using OpainCB.Application.Contracts.Pdf;
-
-namespace OpainCB.Application.Features.Certificates.Commands.GenerateLaborCertificate;
-
-public sealed class GenerateLaborCertificateCommandHandler
-    : IRequestHandler<GenerateLaborCertificateCommand, PdfFile>
+[HttpPost("laboral")]
+[ProducesResponseType(typeof(ResponseDto<PdfFileDto>), StatusCodes.Status200OK)]
+[ProducesResponseType(StatusCodes.Status400BadRequest)]
+public async Task<IActionResult> GenerateLaborCertificate(
+    [FromBody] LaborCertificateRequestDto request,
+    CancellationToken cancellationToken)
 {
-    private readonly IEmployeeRepository _employees;   // tu repositorio existente
-    private readonly IPdfGenerator _pdfGenerator;
+    var userId = _userAuthenticator.GetCurrentUserId(User);   // MicrosoftUserAuthenticatorHelper
 
-    public GenerateLaborCertificateCommandHandler(IEmployeeRepository employees, IPdfGenerator pdfGenerator)
-    {
-        _employees = employees;
-        _pdfGenerator = pdfGenerator;
-    }
+    var response = await _laborCertificateService.GenerateAsync(request, userId, cancellationToken);
 
-    public async Task<PdfFile> Handle(GenerateLaborCertificateCommand request, CancellationToken cancellationToken)
-    {
-        var employee = await _employees.GetByDocumentAsync(request.EmployeeDocument, cancellationToken)
-            ?? throw new NotFoundException(nameof(Employee), request.EmployeeDocument);
-
-        var model = new LaborCertificateModel
-        {
-            EmployeeFullName = employee.FullName,
-            EmployeeDocument = employee.Document,
-            Position = employee.Position,
-            ContractType = employee.ContractType,
-            HireDate = employee.HireDate,
-            TerminationDate = employee.TerminationDate,
-            MonthlySalary = employee.MonthlySalary,
-            AddressedTo = request.AddressedTo,
-            SignerName = "Nombre del firmante",
-            SignerPosition = "Gerente de Gestión Humana",
-            SignerSignatureAssetKey = "firma-gerente-gh.png"
-        };
-
-        return await _pdfGenerator.GenerateAsync(model, cancellationToken);
-    }
+    return response.Success ? Ok(response) : BadRequest(response);
 }
 ```
 
-> El firmante puede venir de configuración o de base de datos; deja de una vez la puerta abierta para no tenerlo quemado en el handler.
+**Dos formas de devolver el PDF — elige una y aplícala a todos los documentos:**
 
-### `GenerateLaborCertificateCommandValidator.cs`
+| Opción | Cuándo | Cómo |
+|---|---|---|
+| **A. Envelope** (recomendada aquí) | La API ya responde `ResponseDto<T>` en todos lados | El front recibe `Content` en base64 y arma la descarga. Mantiene el contrato uniforme. |
+| **B. Archivo binario** | Descarga directa desde el navegador | `return File(file.Content, file.ContentType, file.FileName);` — rompe el envelope; documéntalo en Swagger. |
+
+Para la opción A, expón `Content` como base64 en el DTO de salida:
 
 ```csharp
-using FluentValidation;
-
-namespace OpainCB.Application.Features.Certificates.Commands.GenerateLaborCertificate;
-
-public sealed class GenerateLaborCertificateCommandValidator
-    : AbstractValidator<GenerateLaborCertificateCommand>
-{
-    public GenerateLaborCertificateCommandValidator()
-    {
-        RuleFor(x => x.EmployeeDocument)
-            .NotEmpty().WithMessage("El documento del empleado es obligatorio.")
-            .MaximumLength(20);
-
-        RuleFor(x => x.AddressedTo).MaximumLength(150);
-    }
-}
+// En PdfFileDto, si se serializa directo, byte[] ya viaja como base64 en System.Text.Json.
+// Si prefieres ser explícito, crea PdfFileResponseDto { Base64, FileName, ContentType }.
 ```
+
+No olvides el atributo de autorización/permiso que usan los demás endpoints de `CertificateController`.
 
 ---
 
-## 11. Paso 10 — Endpoint en WebApp
+## 1️⃣2️⃣ Agregar un PDF nuevo (el objetivo del diseño)
 
-```csharp
-using MediatR;
-using Microsoft.AspNetCore.Mvc;
-using OpainCB.Application.Features.Certificates.Commands.GenerateLaborCertificate;
+Para cualquier documento futuro — paz y salvo, constancia de ingresos, orden de pago — son **3 archivos + 1 línea**:
 
-namespace OpainCB.WebApp.Controllers;
+| # | Archivo | Contenido |
+|---|---|---|
+| 1 | `Features/<Feature>/Application/DTOs/XxxModel.cs` | Los datos del documento. |
+| 2 | `Features/<Feature>/Application/Documents/XxxDocument.cs` | `: BasePdfDocument<XxxModel>` → solo `DocumentTitle` y `ComposeContent`. |
+| 3 | `Features/<Feature>/Application/Documents/XxxDocumentBuilder.cs` | `: IPdfDocumentBuilder<XxxModel>` → carga imágenes y arma el documento. |
+| 4 | `ApplicationServiceRegistration.cs` | `services.AddScoped<IPdfDocumentBuilder<XxxModel>, XxxDocumentBuilder>();` |
 
-[ApiController]
-[Route("api/v1/certificados")]
-public sealed class CertificatesController : ControllerBase
-{
-    private readonly IMediator _mediator;
+El header y el footer **se heredan solos**. Si un documento necesita orientación horizontal o márgenes distintos, sobrescribe `PageSize` o `MarginCentimeters`. Si necesita firma, reutiliza `SignatureBlockComponent`.
 
-    public CertificatesController(IMediator mediator) => _mediator = mediator;
+### Migrar el certificado de cesantías existente
 
-    [HttpPost("laboral")]
-    [Produces("application/pdf")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GenerateLaborCertificate(
-        [FromBody] GenerateLaborCertificateCommand command,
-        CancellationToken cancellationToken)
-    {
-        var file = await _mediator.Send(command, cancellationToken);
-        return File(file.Content, file.ContentType, file.FileName);
-    }
-}
-```
+Si `ICesantiasCertificateGenerationService` ya arma un `IDocument`:
 
-**Si la API usa un envelope estándar** (`Response<T>` + `ResponseConstants`), no devuelvas `File(...)`: rompe el contrato. En ese caso devuelve el PDF en base64 y que el front haga la descarga:
+1. Extrae su modelo de datos a un `CesantiasCertificateModel`.
+2. Convierte su clase de documento en `: BasePdfDocument<CesantiasCertificateModel>` y **borra** su header, footer y configuración de página: ahora los hereda.
+3. Crea su `CesantiasCertificateDocumentBuilder` y regístralo.
+4. El servicio existente pasa a llamar a `IPdfGeneratorService.GenerateAsync(model)` y conserva su interfaz pública → **los consumidores no se enteran**.
 
-```csharp
-return Ok(new Response<PdfFileDto>
-{
-    Data = new PdfFileDto(Convert.ToBase64String(file.Content), file.FileName, file.ContentType),
-    Message = ResponseConstants.Success
-});
-```
-
-Decide una de las dos y aplícala a todos los PDF por consistencia.
+Resultado: cesantías y certificado laboral comparten header y footer. Cambiar el logo pasa a ser editar `appsettings.json`, no tocar N clases.
 
 ---
 
-## 12. Cómo agregar un PDF nuevo (el objetivo del diseño)
+## 1️⃣3️⃣ Persistir o enviar el PDF (opcional)
 
-Para cualquier documento futuro — orden de pago, paz y salvo, constancia — son **3 archivos y 1 línea de DI**:
+`PdfFileDto.Content` son bytes: se integra con lo que ya existe sin código nuevo de PDF.
 
-1. **Modelo** en `Application/Features/<Area>/.../XxxModel.cs`.
-2. **Documento** en `Infrastructure/Pdf/Documents/Xxx/XxxDocument.cs` heredando de `BasePdfDocument<XxxModel>` e implementando solo `DocumentTitle` y `ComposeContent`.
-3. **Builder** `XxxDocumentBuilder : IPdfDocumentBuilder<XxxModel>`.
-4. **Registro**: `services.AddScoped<IPdfDocumentBuilder<XxxModel>, XxxDocumentBuilder>();`
+| Necesidad | Servicio existente |
+|---|---|
+| Guardar en almacenamiento local | `IRequestLocalStorageService` |
+| Subir a SharePoint | `IRequestSharePointStorageService` |
+| Radicar en gestor documental | `IDocManagerService` |
+| Enviar por correo como adjunto | `IMailNotificationService` + plantilla en `EmailsTemplate/` |
+| Asociar a una solicitud | `RequestAttachment` vía `IUnitOfWork` |
 
-El header y el footer se heredan solos. Si un documento necesita orientación horizontal o márgenes distintos, sobrescribe `PageSize` o `MarginCentimeters`.
+Si el certificado debe quedar adjunto a una solicitud, envuelve la operación con `TransactionExecutorHelper` para que el guardado y la actualización viajen en la misma transacción.
 
 ---
 
-## 13. Probar sin levantar la API
-
-Proyecto de consola o test unitario:
+## 1️⃣4️⃣ Probar sin levantar la API
 
 ```csharp
 QuestPDF.Settings.License = LicenseType.Community;
+QuestPDF.Settings.EnableDebugging = true;   // solo en pruebas
 
-var branding = new PdfBrandingOptions { CompanyName = "OPAIN S.A.", CompanyDocument = "NIT 900.105.860-4" };
+var branding = new PdfBrandingOptions
+{
+    CompanyName = "DOC",
+    CompanyDocument = "NIT 900.000.000-0",
+    CompanyAddress = "Bogotá D.C."
+};
+
 var model = new LaborCertificateModel { /* datos de prueba */ };
 
 var document = new LaborCertificateDocument(
@@ -955,55 +1131,71 @@ var document = new LaborCertificateDocument(
 document.GeneratePdf("certificado-prueba.pdf");
 ```
 
-Para iterar el diseño en caliente, usa el **QuestPDF Companion** (hot reload del layout):
+Para iterar el diseño con hot reload del layout:
 
 ```bash
 dotnet tool install --global QuestPDF.Companion
 ```
 
 ```csharp
-await document.ShowInCompanionAsync();   // en versiones previas: ShowInPreviewer()
+await document.ShowInCompanionAsync();   // en versiones anteriores: ShowInPreviewer()
 ```
 
-Test de humo recomendado:
+Test de humo:
 
 ```csharp
 [Fact]
-public async Task Genera_certificado_con_contenido_valido()
+public async Task Genera_certificado_laboral_valido()
 {
-    var file = await _generator.GenerateAsync(ModelBuilder.Valid());
+    var file = await _pdfGenerator.GenerateAsync(TestData.LaborCertificateModel());
 
     Assert.NotEmpty(file.Content);
-    Assert.StartsWith("%PDF", System.Text.Encoding.ASCII.GetString(file.Content, 0, 4));
+    Assert.Equal("%PDF", Encoding.ASCII.GetString(file.Content, 0, 4));
     Assert.EndsWith(".pdf", file.FileName);
 }
 ```
 
+Prueba obligatoria antes de dar por terminado: **un certificado con texto largo que ocupe 2–3 páginas**, para verificar que header y footer se repiten y que la paginación dice "Página X de Y".
+
 ---
 
-## 14. Errores comunes y cómo evitarlos
+## 1️⃣5️⃣ Errores comunes
 
 | Síntoma | Causa | Solución |
 |---|---|---|
-| `DocumentLayoutException` | Un elemento no cabe en la página (tabla ancha, imagen grande, `Height` fijo excesivo) | Activa `QuestPDF.Settings.EnableDebugging = true` en desarrollo: el mensaje indica el elemento exacto. |
-| Excepción de fuentes / texto en blanco en Linux o Docker | La imagen base no trae fuentes ni `libfontconfig1` | En el Dockerfile: `RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 && rm -rf /var/lib/apt/lists/*` y registra una fuente propia con `FontManager.RegisterFont`. |
-| Firma se ve pixelada | Imagen pequeña escalada hacia arriba | Usa PNG con fondo transparente de al menos 600 px de ancho; QuestPDF no inventa resolución. |
-| PDF muy pesado | Imágenes en alta sin compresión | `DocumentSettings { ImageCompressionQuality = ImageCompressionQuality.High, ImageRasterDpi = 144 }`. |
-| Excepción de licencia al arrancar | Falta `QuestPDF.Settings.License` | Configúralo una sola vez en el registro de Infrastructure o en `Program.cs`. |
-| Request lento / thread pool ahogado | `GeneratePdf()` corriendo en el hilo del request | Ya resuelto con `Task.Run` en `QuestPdfGenerator`; para volúmenes altos, encola el trabajo en background. |
-| Leer el logo del disco en cada request | Sin caché | Ya resuelto con `IMemoryCache` en `FileSystemPdfAssetProvider`. |
+| `DocumentLayoutException` | Un elemento no cabe (tabla ancha, `Height` fijo excesivo, imagen grande) | `QuestPDF.Settings.EnableDebugging = true` en desarrollo: el mensaje señala el elemento exacto. |
+| Texto en blanco o excepción de fuentes en Linux/Docker | La imagen base no trae fuentes ni `libfontconfig1` | En el Dockerfile: `RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 libfreetype6 && rm -rf /var/lib/apt/lists/*` y registra una fuente propia con `FontManager.RegisterFont(stream)`. |
+| Firma pixelada | Imagen pequeña escalada hacia arriba | PNG con fondo transparente, mínimo 600 px de ancho. QuestPDF no inventa resolución. |
+| PDF muy pesado | Imágenes sin compresión | `DocumentSettings { ImageCompressionQuality = ImageCompressionQuality.High, ImageRasterDpi = 144 }`. |
+| Excepción de licencia al arrancar | Falta `QuestPDF.Settings.License` | Una sola vez, en `ApplicationServiceRegistration`. |
+| Request lento bajo carga | `GeneratePdf()` en el hilo del request | Ya resuelto con `Task.Run` en `PdfGeneratorService`. Para volúmenes altos, encola en background. |
+| Logo leído del disco en cada request | Sin caché | Ya resuelto con `IMemoryCache` en `FileSystemPdfAssetProvider`. |
+| `Assets` no aparece en el servidor | Falta el `<Content Include>` | Verifica que los archivos existan en `bin/<config>/net8.0/Features/Pdf/Assets`. |
+
+### Compatibilidad de versiones de QuestPDF
+
+| API usada | Disponible desde | Alternativa en versiones viejas |
+|---|---|---|
+| `GetSettings()` en `IDocument` | 2023.4 | Elimina el método; la interfaz no lo pide. |
+| `.Image(bytes).FitArea()` | 2023.x | `.Image(bytes, ImageScaling.FitArea)` |
+| `ShowInCompanionAsync()` | 2024.3 | `ShowInPreviewer()` |
+| `TimeProvider` | .NET 8 | `DateTimeOffset.Now` directo. |
 
 ---
 
-## 15. Checklist de cierre
+## ✅ Checklist de cierre
 
-- [ ] `QuestPDF` está **solo** en `OpainCB.Infrastructure.csproj`.
-- [ ] La licencia está configurada y validada con el líder técnico.
-- [ ] `Assets/Pdf` se copia al output (`CopyToOutputDirectory`).
-- [ ] La sección `Pdf` existe en `appsettings.json` de todos los ambientes.
-- [ ] Header y footer se ven idénticos en un PDF de 1 página y en uno de 3 (probar con contenido largo).
-- [ ] La paginación muestra "Página X de Y" correctamente.
+- [ ] Verificado dónde está referenciado QuestPDF y con qué versión.
+- [ ] Licencia validada con el líder técnico.
+- [ ] `Features/Pdf/Assets/**` se copia al output (`CopyToOutputDirectory`).
+- [ ] Sección `Pdf` presente en `appsettings.json` de **todos** los ambientes.
+- [ ] Ningún nombre institucional, NIT ni dirección quemados en código.
+- [ ] Header y footer idénticos en un PDF de 1 página y en uno de 3.
+- [ ] Paginación "Página X de Y" correcta.
 - [ ] El bloque de firma conserva su alto cuando no hay imagen.
-- [ ] El endpoint respeta el contrato de respuesta del resto de la API.
-- [ ] Hay al menos un test que valida bytes `%PDF` y nombre de archivo.
+- [ ] Servicios registrados en `ApplicationServiceRegistration.cs`.
+- [ ] El endpoint respeta el contrato (`ResponseDto`) y el atributo de permisos del controlador.
+- [ ] Endpoint documentado en Swagger.
+- [ ] Test que valida cabecera `%PDF` y nombre de archivo.
 - [ ] Probado dentro del contenedor Linux, no solo en Windows.
+- [ ] Decidido si el certificado de cesantías migra a la base compartida (y creado el ticket si queda para después).
