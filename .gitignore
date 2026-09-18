@@ -1,0 +1,26 @@
+# Configuración local de Claude Code (hooks, settings, permisos)
+.claude/
+
+# macOS
+.DS_Store
+.AppleDouble
+Icon?
+
+# Editores / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Visual Studio / .NET (fragmentos o proyectos de prueba)
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# Temporales
+*.log
+*.tmp
+*.bak
+~$*

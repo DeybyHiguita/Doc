@@ -1,4 +1,0 @@
-# Términos prohibidos en este repositorio.
-# Formato:  termino|reemplazo     (la comparación NO distingue mayúsculas)
-# Este archivo es el ÚNICO lugar donde puede aparecer un término prohibido.
-OPAIN|DOC
