@@ -57,6 +57,7 @@ DOCCB.Application/Features/Requests/Application/
 │   └── IPayrollTaxSummaryService.cs                          ⭐ fuente de nómina
 └── Services/
     ├── IncomeWithholdingCertificateGenerationFactory.cs      ⭐ el Factory
+    ├── FakePayrollTaxSummaryService.cs                       datos ficticios (solo Development)
     └── IncomeWithholdingCertificateGenerationService.cs      ⭐ el generador QuestPDF
 ```
 
@@ -546,6 +547,197 @@ public interface IPayrollTaxSummaryService
 ```
 
 > Este es el punto que más depende de terceros: los valores salen del maestro de nómina. La implementación se conecta a esa fuente. **No quemes valores** como en el salario de la carta laboral actual: un 220 con cifras de prueba que llegue a un empleado es un documento tributario falso. Si necesitas un stub para desarrollo, regístralo **solo** cuando `IHostEnvironment.IsDevelopment()`.
+
+### Implementación de ejemplo con datos ficticios
+
+`FakePayrollTaxSummaryService` permite desarrollar y probar el formulario completo mientras no exista la conexión real a nómina.
+
+**Cómo se comporta:**
+
+- **Datos determinísticos.** Los montos salen de un hash del código de empleado: el mismo empleado recibe siempre los mismos valores, así el PDF se puede comparar entre ejecuciones.
+- **Cubre los casos que hay que probar:**
+  - 1 de cada 4 empleados ingresó a mitad de año, para probar las casillas 30 y 31.
+  - Los salarios bajos no tienen retención, para verificar que el cero se imprime como `-`.
+  - Aportes voluntarios y AFC solo para algunos empleados.
+  - El código `0000000000` simula un empleado sin nómina, para probar el camino de error.
+- **Todo está marcado como ficticio.** Los errores empiezan con `[FICTICIO]` y la clase lleva `Fake` en el nombre, para que nadie la confunda con la implementación real.
+
+> ⚠️ La retención de la casilla 60 es una **aproximación inventada**, no el procedimiento 1 ni el 2 de los artículos 385 y 386 del E.T. Sirve para que la casilla tenga un valor, no para validar cálculos tributarios.
+
+### `Services/FakePayrollTaxSummaryService.cs`
+
+```csharp
+using DOCCB.Application.Features.Common.Application.DTOs;
+using DOCCB.Application.Features.Common.Application.Helpers;
+using DOCCB.Application.Features.Requests.Application.DTOs.IncomeWithholding;
+using DOCCB.Application.Features.Requests.Application.Interfaces;
+
+namespace DOCCB.Application.Features.Requests.Application.Services
+{
+    /// <summary>
+    /// ⚠️ DATOS FICTICIOS. Implementación de ejemplo de <see cref="IPayrollTaxSummaryService"/>
+    /// para desarrollo y pruebas. Registrar SOLO en Development.
+    /// </summary>
+    public class FakePayrollTaxSummaryService : IPayrollTaxSummaryService
+    {
+        /// <summary>Simula un empleado sin nómina en el año, para probar el camino de error.</summary>
+        public const string EmployeeWithoutPayrollCode = "0000000000";
+
+        private const decimal MinMonthlySalary = 2_500_000m;
+        private const decimal SalaryStep = 50_000m;
+        private const uint SalarySteps = 190; // salarios entre 2.500.000 y ~12.000.000
+
+        /// <summary>
+        /// Salario mínimo de referencia. Solo se usa para decidir si aplica el fondo de
+        /// solidaridad y la retención ficticia. Los años que no estén aquí responden error.
+        /// </summary>
+        private static readonly Dictionary<int, decimal> MinimumWageByYear = new()
+        {
+            [2023] = 1_160_000m,
+            [2024] = 1_300_000m,
+            [2025] = 1_423_500m,
+        };
+
+        public Task<ResponseDto<PayrollTaxSummaryDto>> GetAnnualSummaryAsync(string employeeCode, int taxYear)
+        {
+            if (string.IsNullOrWhiteSpace(employeeCode) || employeeCode == EmployeeWithoutPayrollCode)
+            {
+                return Task.FromResult(ResponseDtoHelper.CreateErrorResponseDto<PayrollTaxSummaryDto>(
+                    $"[FICTICIO] No hay nómina registrada para el empleado {employeeCode} en {taxYear}."));
+            }
+
+            if (!MinimumWageByYear.TryGetValue(taxYear, out var minimumWage))
+            {
+                return Task.FromResult(ResponseDtoHelper.CreateErrorResponseDto<PayrollTaxSummaryDto>(
+                    $"[FICTICIO] No hay datos de ejemplo para el año gravable {taxYear}."));
+            }
+
+            var seed = StableHash(employeeCode);
+
+            // Salario mensual entre 2.500.000 y ~12.000.000, en pasos de 50.000.
+            var monthlySalary = MinMonthlySalary + (seed % SalarySteps) * SalaryStep;
+
+            // 1 de cada 4 empleados ingresó entre abril y septiembre.
+            var hiredMidYear = seed % 4 == 0;
+            var startMonth = hiredMidYear ? (int)(seed % 6) + 4 : 1;
+            var monthsWorked = 13 - startMonth;
+            var yearFraction = monthsWorked / 12m;
+
+            var annualSalary = monthlySalary * monthsWorked;
+            var serviceBonus = Round(monthlySalary * yearFraction);           // prima → 42
+            var severance = Round(monthlySalary * yearFraction);              // cesantías → 49
+            var severanceInterest = Round(severance * 0.12m * yearFraction);  // intereses → 47
+
+            var health = Round(annualSalary * 0.04m);                         // 53
+            var pensionRate = monthlySalary >= minimumWage * 4 ? 0.05m : 0.04m;
+            var pension = Round(annualSalary * pensionRate);                  // 54 (incluye solidaridad)
+
+            var voluntaryPension = seed % 3 == 0 ? Round(monthlySalary * 0.5m) : 0m; // 56
+            var afc = seed % 5 == 0 ? Round(monthlySalary * 0.3m) : 0m;               // 57
+
+            var summary = new PayrollTaxSummaryDto
+            {
+                PeriodFrom = new DateOnly(taxYear, startMonth, 1),
+                PeriodTo = new DateOnly(taxYear, 12, 31),
+                Income = new IncomeConceptsDto
+                {
+                    SalaryPayments = annualSalary,
+                    SocialBenefitPayments = serviceBonus,
+                    SeveranceAndInterestPaid = severanceInterest,
+                    SeveranceConsignedToFund = severance
+                },
+                Contributions = new ContributionsDto
+                {
+                    MandatoryHealth = health,
+                    MandatoryPensionAndSolidarity = pension,
+                    VoluntaryPensionFunds = voluntaryPension,
+                    AfcAccounts = afc
+                },
+                WithholdingAmount = FakeWithholding(monthlySalary, monthsWorked, minimumWage) // 60
+            };
+
+            return Task.FromResult(ResponseDtoHelper.CreateSuccessResponseDto(summary));
+        }
+
+        /// <summary>
+        /// Aproximación INVENTADA: 10 % de lo que supere 4 salarios mínimos al mes.
+        /// No es el procedimiento de retención del Estatuto Tributario.
+        /// </summary>
+        private static decimal FakeWithholding(decimal monthlySalary, int monthsWorked, decimal minimumWage)
+        {
+            var threshold = minimumWage * 4;
+            return monthlySalary <= threshold
+                ? 0m
+                : Round((monthlySalary - threshold) * 0.10m * monthsWorked);
+        }
+
+        /// <summary>Redondea a miles, como suelen venir los valores de nómina.</summary>
+        private static decimal Round(decimal value) =>
+            Math.Round(value / 1000m, MidpointRounding.AwayFromZero) * 1000m;
+
+        /// <summary>
+        /// Hash FNV-1a de 32 bits. No se usa string.GetHashCode() porque en .NET cambia
+        /// en cada ejecución del proceso: los datos dejarían de ser repetibles.
+        /// </summary>
+        private static uint StableHash(string value)
+        {
+            unchecked
+            {
+                var hash = 2166136261u;
+                foreach (var character in value)
+                {
+                    hash ^= character;
+                    hash *= 16777619u;
+                }
+                return hash;
+            }
+        }
+    }
+}
+```
+
+### Pruebas del servicio de ejemplo
+
+```csharp
+public class FakePayrollTaxSummaryServiceTests
+{
+    private readonly FakePayrollTaxSummaryService _service = new();
+
+    [Fact]
+    public async Task El_mismo_empleado_recibe_siempre_los_mismos_valores()
+    {
+        var first = await _service.GetAnnualSummaryAsync("1032456789", 2025);
+        var second = await _service.GetAnnualSummaryAsync("1032456789", 2025);
+
+        Assert.Equal(first.Response.Income.TotalGrossIncome, second.Response.Income.TotalGrossIncome);
+        Assert.Equal(first.Response.WithholdingAmount, second.Response.WithholdingAmount);
+    }
+
+    [Fact]
+    public async Task Simula_un_empleado_sin_nomina()
+    {
+        var result = await _service.GetAnnualSummaryAsync(FakePayrollTaxSummaryService.EmployeeWithoutPayrollCode, 2025);
+
+        Assert.True(result.HasError);
+    }
+
+    [Fact]
+    public async Task Responde_error_para_un_anio_sin_datos_de_ejemplo()
+    {
+        var result = await _service.GetAnnualSummaryAsync("1032456789", 2019);
+
+        Assert.True(result.HasError);
+    }
+
+    [Fact]
+    public async Task El_periodo_termina_el_31_de_diciembre()
+    {
+        var result = await _service.GetAnnualSummaryAsync("1032456789", 2025);
+
+        Assert.Equal(new DateOnly(2025, 12, 31), result.Response.PeriodTo);
+    }
+}
+```
 
 ### Método nuevo en `IUserManagementService`
 
@@ -1250,9 +1442,36 @@ namespace DOCCB.Application.Features.Requests.Application.Services
 En `ApplicationServiceRegistration.cs`, junto al registro del certificado laboral:
 
 ```csharp
-services.AddScoped<IIncomeWithholdingCertificateGenerationService, IncomeWithholdingCertificateGenerationFactory>();
-services.AddScoped<IPayrollTaxSummaryService, PayrollTaxSummaryService>();
+public static IServiceCollection AddApplicationServices(
+    this IServiceCollection services,
+    IConfiguration configuration,
+    IHostEnvironment environment)
+{
+    // ... registros existentes
+
+    services.AddScoped<IIncomeWithholdingCertificateGenerationService, IncomeWithholdingCertificateGenerationFactory>();
+
+    if (environment.IsDevelopment())
+    {
+        // ⚠️ Datos ficticios: solo en Development.
+        services.AddScoped<IPayrollTaxSummaryService, FakePayrollTaxSummaryService>();
+    }
+    else
+    {
+        services.AddScoped<IPayrollTaxSummaryService, PayrollTaxSummaryService>();
+    }
+
+    return services;
+}
 ```
+
+En `Program.cs`, pasa el ambiente:
+
+```csharp
+builder.Services.AddApplicationServices(builder.Configuration, builder.Environment);
+```
+
+> Mientras `PayrollTaxSummaryService` (la real) no exista, deja solo la rama de Development y **no** registres nada en los demás ambientes. Si alguien llama al endpoint en QA o Producción, la inyección de dependencias falla con un error claro. Es mejor que un certificado tributario con cifras inventadas.
 
 ---
 
@@ -1358,6 +1577,7 @@ Aparecieron al revisar el código base para este documento. Los primeros dos afe
 - [ ] Sección `IncomeWithholdingCertificate` en `appsettings.json` de todos los ambientes, con el año gravable en `ThresholdsByYear`.
 - [ ] NIT configurado sin DV; test del DV con el NIT de la compañía.
 - [ ] `IPayrollTaxSummaryService` conectado al maestro de nómina, sin valores quemados.
+- [ ] `FakePayrollTaxSummaryService` registrado solo en Development.
 - [ ] Nombres y apellidos del trabajador vienen como campos separados.
 - [ ] `IsApproved` y `UserEmail` con `[JsonIgnore]`; el correo se asigna desde el token.
 - [ ] Casillas 52, 67, 74 y 75 calculadas, no recibidas.
