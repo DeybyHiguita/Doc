@@ -1,8 +1,13 @@
-# 🔔 Centro de notificaciones (Angular 20 + Bootstrap 5)
+# 🔔 Centro de notificaciones animado (Angular 20 + Bootstrap 5)
 
-Guía paso a paso para construir un **cajón lateral de notificaciones** que se abre desde un botón con campana en el header. Al hacer clic en una notificación, la marca como leída y lleva a la página que corresponda según su tipo.
+Guía paso a paso para construir un **panel de notificaciones** que se despliega desde la campana del header:
 
-- **Stack:** Angular 20 · standalone · signals · OnPush · Bootstrap 5.3 (Offcanvas) · Font Awesome · SSR · MSAL
+- **En escritorio**, una tarjeta flotante de vidrio esmerilado **crece desde la campana** con un leve rebote y sus notificaciones entran en cascada.
+- **En móvil**, una **hoja inferior** sube desde el borde, cómoda para el pulgar.
+
+Al hacer clic en una notificación, se marca como leída con una animación y lleva a la página que corresponda según su tipo.
+
+- **Stack:** Angular 20 · standalone · signals · OnPush · Bootstrap 5.3 (utilidades y variables) · animaciones CSS · Font Awesome · SSR · MSAL
 - **Datos de cada notificación:** id, id del requerimiento, tipo, mensaje, si ya fue leída y fecha de creación
 
 ---
@@ -26,6 +31,7 @@ Antes de diseñar, estos son los huecos del requerimiento y la decisión que tom
 | 11 | **Nombre `Notification`.** Choca con la API del navegador `window.Notification`. | El modelo se llama `AppNotification`. |
 | 12 | **Ya existe `shared/components/notification`.** Otro componente con nombre parecido genera confusión. | Revisa qué hace el existente antes de crear este. Aquí se llama `notification-center` para diferenciarlo. |
 | 13 | **Seguridad del backend.** `markAsRead(id)` sin validar dueño deja a cualquiera marcar notificaciones ajenas. | Los endpoints filtran por el usuario del token, nunca por un `userId` enviado por el cliente. |
+| 14 | **Animaciones que estorban.** Un panel que tarda en abrir, una campana que suena en cada carga o un rebote exagerado cansan en la segunda semana. | Solo `transform` y `opacity`; abrir en ~320 ms y cerrar en 160 ms; la campana suena solo cuando el contador **sube**; todo se apaga con `prefers-reduced-motion`. |
 
 **Fuera de alcance, pero pregúntalo:** borrar o archivar notificaciones, filtro "Solo no leídas" (debe hacerse en el servidor, no sobre la página cargada), notificaciones del navegador y retención (cuánto tiempo se guardan).
 
@@ -33,58 +39,103 @@ Antes de diseñar, estos son los huecos del requerimiento y la decisión que tom
 
 ## 2. 🎨 Diseño
 
-### El cajón
+### La idea
+
+El panel debe sentirse **conectado al botón que lo abrió**. Por eso nace desde la campana: escala desde el punto donde está el ícono, con una pequeña flecha que la señala. Un cajón lateral que tapa media pantalla, en cambio, se siente como otra página.
+
+### Escritorio: tarjeta flotante
 
 ```text
-                              ┌──────────────────────────────────────┐
-                              │ Notificaciones   Marcar todas    ✕   │
-  Header                      ├──────────────────────────────────────┤
- ┌────────────────────────┐   │▌(✓) Solicitud aprobada   hace 5 min ●│ ← no leída:
- │ Logo   ...     🔔 (3)  │   │▌    Tu certificado laboral fue       │   fondo, negrita
- └────────────────────────┘   │▌    aprobado y está listo.           │   y punto
-                              │▌    Solicitud #1284                  │
-                              ├──────────────────────────────────────┤
-                              │ (⏳) Pendiente de aprobación   ayer  │ ← leída
-                              │     Carlos Ruiz envió una solicitud   │
-                              │     de vacaciones.                    │
-                              │     Solicitud #1279                   │
-                              ├──────────────────────────────────────┤
-                              │ (✕) Solicitud rechazada   hace 3 días│
-                              │     ...                               │
-                              ├──────────────────────────────────────┤
-                              │            [ Ver más ]                │
-                              └──────────────────────────────────────┘
-                                    400 px en escritorio · 100 % en móvil
+                                              🔔 (3)
+                                               ▲
+                  ┌────────────────────────────┴──┐
+                  │ Notificaciones  [3 nuevas]  ✓✓ ✕│
+                  ├───────────────────────────────┤
+                  │ HOY                             │ ← encabezado fijo al hacer scroll
+                  │┃(✓) Solicitud aprobada   5 min ●│ ← no leída: barra de acento,
+                  │┃    Tu certificado laboral fue  │   fondo suave y punto
+                  │┃    aprobado y está listo.       │
+                  │┃    # Solicitud 1284            │
+                  │ (⏳) Pendiente de aprobación 2 h │ ← leída
+                  │      Carlos Ruiz envió...       │
+                  │ AYER                            │
+                  │ (✕) Solicitud rechazada  ayer   │
+                  │ ANTERIORES                      │
+                  │ ...                             │
+                  │           [ Ver más ]           │
+                  └─────────────────────────────────┘
+                   380 px · esquinas de 16 px · vidrio esmerilado · sombra profunda
 ```
 
-### Anatomía de un ítem
+### Móvil: hoja inferior
 
-| Zona | Contenido | Bootstrap |
+```text
+┌─────────────────────────┐
+│                         │
+│   (página oscurecida)   │  ← tocar aquí cierra
+│                         │
+├─────────────────────────┤ ╮
+│         ──────          │ │  asa decorativa
+│ Notificaciones 3 nuevas │ │
+│ HOY                     │ │  hasta 85 % del alto
+│ (✓) Solicitud aprobada  │ │
+│ ...                     │ ╯
+└─────────────────────────┘
+```
+
+### Coreografía de animaciones
+
+| Momento | Qué pasa | Duración y curva |
 |---|---|---|
-| Ícono | Círculo de 36 px con el ícono del tipo | `rounded-circle bg-{tono}-subtle text-{tono}-emphasis` |
-| Línea 1 | Etiqueta del tipo · fecha relativa | `small text-body-secondary` |
-| Línea 2 | Mensaje, máximo 3 líneas | `line-clamp` propio |
-| Línea 3 | "Solicitud #1284" | `small text-body-secondary` |
-| Indicador | Punto azul de 8 px si no está leída | `rounded-circle bg-primary` |
+| **Abrir** (escritorio) | La tarjeta crece desde la campana: escala 0,9 → 1, sube 8 px, aparece | 320 ms · resorte leve `cubic-bezier(0.2, 0.9, 0.3, 1.15)` |
+| **Cerrar** | Se encoge hacia la campana, sin rebote | 160 ms · `ease-in` |
+| **Ítems al abrir** | Entran en cascada: suben 8 px y aparecen | 260 ms cada uno, 35 ms entre uno y otro, máximo 8 escalones |
+| **Llega una nueva** | La campana se balancea y el badge da un salto | 900 ms |
+| **Marcar como leída** | El resaltado se desvanece y el punto se encoge | 300 ms |
+| **Marcar todas** | Los resaltados se apagan en ola, de arriba hacia abajo | 300 ms + 30 ms por ítem |
+| **Abrir** (móvil) | La hoja sube desde el borde y el fondo se oscurece | 320 ms |
+| **Estado vacío** | El check aparece con rebote y un anillo pulsa tres veces | 400 ms + 3 × 2,4 s |
+| **Hover** en un ítem | Se desplaza 2 px, el ícono gira un poco y aparece una flecha | 200 ms |
 
-### Los cuatro estados del cajón
+**Reglas de la coreografía:**
+
+1. Solo se animan `transform` y `opacity`: corren en la GPU y no causan saltos.
+2. Cerrar es más rápido que abrir: el usuario ya decidió irse.
+3. Nada bloquea el clic: se puede elegir una notificación mientras la cascada todavía entra.
+4. La campana **no** suena al cargar la página, solo cuando el contador sube mientras el usuario está ahí.
+5. Con `prefers-reduced-motion: reduce`, todo se reduce a un fundido corto.
+
+### Detalles visuales
+
+| Elemento | Tratamiento |
+|---|---|
+| Panel | Fondo translúcido con `backdrop-filter: blur(18px)` (vidrio), borde sutil, sombra de dos capas |
+| Flecha | Cuadrado rotado 45° que apunta a la campana |
+| Encabezado | Título + chip "3 nuevas" + "Marcar todas" + cerrar (la X gira al pasar el mouse) |
+| Grupos | "Hoy", "Ayer", "Esta semana", "Anteriores", fijos arriba al hacer scroll |
+| Ítem no leído | Barra de acento de 3 px a la izquierda + fondo suave + punto con halo + mensaje en negrita |
+| Ícono del tipo | Cuadrado redondeado de 40 px con el color suave del tono |
+| Badge de la campana | Píldora roja con borde del color del fondo, para que se despegue del ícono |
+
+### Los cuatro estados
 
 | Estado | Qué se ve |
 |---|---|
-| Cargando (primera vez) | 4 filas con `placeholder-glow` |
-| Error | `alert alert-danger` con botón "Reintentar" |
-| Vacío | Campana gris + "No tienes notificaciones" |
-| Con datos | Lista + "Ver más" si hay más páginas |
+| Cargando (primera vez) | 4 filas con `placeholder-wave` |
+| Error | Ícono en círculo rojo + "No pudimos cargar tus notificaciones" + "Reintentar" |
+| Vacío | Check verde con anillo que pulsa + "¡Estás al día!" |
+| Con datos | Grupos por día + "Ver más" si hay más páginas |
 
-Al abrir el cajón por segunda vez **no** se muestran placeholders: se pinta lo que ya estaba y se refresca por detrás. Mostrar el esqueleto cada vez que se abre se siente lento.
+Al abrir por segunda vez **no** se muestran los placeholders: se pinta lo que ya estaba, con su cascada, y se refresca por detrás.
 
 ### Accesibilidad
 
-- El botón de la campana anuncia el contador: `aria-label="Notificaciones, 3 sin leer"`, con `aria-expanded` y `aria-controls`.
-- El badge visual lleva `aria-hidden="true"`: el número ya está en el `aria-label`.
-- Cada ítem que navega es un `<a>` real: permite Ctrl+clic y "abrir en otra pestaña". Los que no navegan son `<button>`.
-- Bootstrap Offcanvas aporta foco atrapado, cierre con Esc y cierre con clic en el fondo.
-- Al cerrar sin navegar, el foco vuelve a la campana.
+- El panel es un **diálogo no modal** (`role="dialog"`, `aria-modal="false"`): no atrapa el foco, igual que los paneles de notificaciones de GitHub o LinkedIn.
+- Al abrir, el foco pasa al panel. **Esc** lo cierra y devuelve el foco a la campana. Un clic afuera lo cierra sin robar el foco.
+- La campana anuncia el contador: `aria-label="Notificaciones, 3 sin leer"`, con `aria-expanded`, `aria-controls` y `aria-haspopup="dialog"`.
+- Cada ítem que navega es un `<a>` real: permite Ctrl+clic y abrir en otra pestaña.
+- "No leída" se distingue por barra, fondo, punto, negrita y un texto oculto para lectores de pantalla, no solo por el color.
+- Cerrado, el panel queda con `visibility: hidden`: sale del orden de tabulación y del árbol de accesibilidad.
 
 ---
 
@@ -101,9 +152,10 @@ src/app/features/notifications/
 │   ├── notification.mapper.ts
 │   └── notifications.service.ts
 ├── application/
-│   └── notification-center.facade.ts          ⭐ estado compartido (campana + cajón)
+│   ├── notification-center.facade.ts          ⭐ estado compartido (campana + panel)
+│   └── notification-groups.ts                 agrupa por Hoy / Ayer / Esta semana / Anteriores
 └── presentation/
-    ├── notification-center/                   ⭐ botón + cajón
+    ├── notification-center/                   ⭐ campana + panel animado
     │   ├── notification-center.component.ts
     │   ├── notification-center.component.html
     │   └── notification-center.component.scss
@@ -118,16 +170,20 @@ src/app/shared/utils/
 
 ---
 
-## 4. Paso 1 — Instalar los tipos de Bootstrap
+## 4. Paso 1 — Por qué un panel propio y no Offcanvas
 
-El cajón usa el JavaScript de Offcanvas de Bootstrap: resuelve el foco atrapado, Esc, el fondo y el bloqueo del scroll. Reimplementar eso a mano es donde suelen aparecer los bugs de accesibilidad.
+El Offcanvas de Bootstrap solo sabe entrar desde un borde de la pantalla. No puede crecer desde la campana, que es lo que hace que el panel se sienta conectado al botón.
 
-```bash
-npm install bootstrap
-npm install -D @types/bootstrap
-```
+| | Offcanvas | Panel propio |
+|---|---|---|
+| Animación | Deslizar desde el borde | Crece desde la campana, cascada, resorte |
+| JavaScript extra | Módulo de Bootstrap con `import()` dinámico por SSR | Ninguno |
+| Esc, clic afuera y foco | Los trae Offcanvas | ~20 líneas en el componente |
+| Móvil | Panel lateral | Hoja inferior, natural para el pulgar |
 
-Si `bootstrap` ya está en `package.json`, solo agrega los tipos. El módulo se carga con `import()` dinámico y solo en el navegador (SSR).
+**No hay nada que instalar.** Si instalaste `@types/bootstrap` solo para el Offcanvas, puedes quitarlo.
+
+> Las animaciones son **CSS puro** con clases (`is-open`, `is-ringing`). No se usa `@angular/animations`, que quedó marcado como obsoleto desde Angular 20.2. Las transiciones de `transform` y `opacity` corren en la GPU y no pasan por la detección de cambios.
 
 ---
 
@@ -420,6 +476,7 @@ export class NotificationCenterFacade {
   private readonly _hasMore = signal(false);
   private readonly _loadingMore = signal(false);
   private readonly _loadMoreFailed = signal(false);
+  private readonly _unreadCountReady = signal(false);
 
   readonly notifications = this._notifications.asReadonly();
   readonly unreadCount = this._unreadCount.asReadonly();
@@ -427,6 +484,8 @@ export class NotificationCenterFacade {
   readonly hasMore = this._hasMore.asReadonly();
   readonly loadingMore = this._loadingMore.asReadonly();
   readonly loadMoreFailed = this._loadMoreFailed.asReadonly();
+  /** true cuando el contador ya vino del servidor. Evita que la campana suene al cargar la página. */
+  readonly unreadCountReady = this._unreadCountReady.asReadonly();
 
   private pollingSubscription: Subscription | null = null;
   /** Evita que una respuesta vieja pise a una más nueva si se abre y cierra rápido. */
@@ -447,6 +506,7 @@ export class NotificationCenterFacade {
       this._notifications.set(page.items);
       this._hasMore.set(page.hasMore);
       this._unreadCount.set(page.unreadCount);
+      this._unreadCountReady.set(true);
       this._loadMoreFailed.set(false);
       this._status.set('ready');
     } catch {
@@ -517,7 +577,10 @@ export class NotificationCenterFacade {
         // catchError DENTRO del switchMap: un error de red no debe matar el polling.
         switchMap(() => this.api.getUnreadCount().pipe(catchError(() => EMPTY))),
       )
-      .subscribe((count) => this._unreadCount.set(count));
+      .subscribe((count) => {
+        this._unreadCount.set(count);
+        this._unreadCountReady.set(true);
+      });
   }
 
   /** Llamar al cerrar sesión. */
@@ -542,7 +605,7 @@ function mergeById(
 
 ---
 
-## 8. Paso 5 — Utilidad de fecha relativa
+## 8. Paso 5 — Utilidades: fecha relativa y grupos por día
 
 ### `shared/utils/relative-time.ts`
 
@@ -573,6 +636,68 @@ export function formatAbsoluteDate(date: Date): string {
 
 ---
 
+### `application/notification-groups.ts`
+
+Agrupa en "Hoy", "Ayer", "Esta semana" y "Anteriores". Cada entrada guarda su posición global (`order`), que es la que usa la cascada de la animación.
+
+```ts
+import { AppNotification } from '../domain/app-notification.model';
+
+export type NotificationGroupKey = 'today' | 'yesterday' | 'week' | 'older';
+
+export interface NotificationEntry {
+  readonly notification: AppNotification;
+  /** Posición global en la lista: define el retraso de la cascada. */
+  readonly order: number;
+}
+
+export interface NotificationGroup {
+  readonly key: NotificationGroupKey;
+  readonly label: string;
+  readonly entries: readonly NotificationEntry[];
+}
+
+const DAY_MS = 86_400_000;
+const GROUP_ORDER: readonly NotificationGroupKey[] = ['today', 'yesterday', 'week', 'older'];
+const GROUP_LABELS: Record<NotificationGroupKey, string> = {
+  today: 'Hoy',
+  yesterday: 'Ayer',
+  week: 'Esta semana',
+  older: 'Anteriores',
+};
+
+/** Espera la lista ordenada de la más reciente a la más antigua, como la entrega la API. */
+export function groupByDay(
+  items: readonly AppNotification[],
+  now: Date = new Date(),
+): NotificationGroup[] {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const buckets = new Map<NotificationGroupKey, NotificationEntry[]>();
+
+  items.forEach((notification, order) => {
+    const key = bucketOf(notification.createdAt.getTime(), startOfToday);
+    const entries = buckets.get(key) ?? [];
+    entries.push({ notification, order });
+    buckets.set(key, entries);
+  });
+
+  return GROUP_ORDER.filter((key) => buckets.has(key)).map((key) => ({
+    key,
+    label: GROUP_LABELS[key],
+    entries: buckets.get(key)!,
+  }));
+}
+
+function bucketOf(time: number, startOfToday: number): NotificationGroupKey {
+  if (time >= startOfToday) return 'today';
+  if (time >= startOfToday - DAY_MS) return 'yesterday';
+  if (time >= startOfToday - 6 * DAY_MS) return 'week';
+  return 'older';
+}
+```
+
+---
+
 ## 9. Paso 6 — El ítem
 
 ### `presentation/notification-item/notification-item.component.ts`
@@ -600,13 +725,14 @@ export class NotificationItemComponent {
 
   readonly config = computed(() => NOTIFICATION_TYPE_CONFIG[this.notification().type]);
   readonly link = computed(() => this.config().route(this.notification()));
+  readonly isUnread = computed(() => !this.notification().isRead);
   readonly relativeDate = computed(() => formatRelativeTime(this.notification().createdAt));
   readonly absoluteDate = computed(() => formatAbsoluteDate(this.notification().createdAt));
   readonly isoDate = computed(() => this.notification().createdAt.toISOString());
 
   readonly iconClasses = computed(() => {
     const tone = this.config().tone;
-    return `notification-item__icon flex-shrink-0 rounded-circle d-inline-flex align-items-center justify-content-center bg-${tone}-subtle text-${tone}-emphasis`;
+    return `nc-item__icon bg-${tone}-subtle text-${tone}-emphasis`;
   });
 
   readonly iconGlyph = computed(() => `fa-solid ${this.config().icon}`);
@@ -615,11 +741,13 @@ export class NotificationItemComponent {
 
 ### `notification-item.component.html`
 
+El punto de "no leída" **siempre está en el DOM** y se muestra u oculta con una clase: si se quitara con `@if`, desaparecería de golpe y no se podría animar.
+
 ```html
 @if (link(); as commands) {
   <a
-    class="notification-item d-flex gap-3 px-3 py-3 text-decoration-none text-body"
-    [class.notification-item--unread]="!notification().isRead"
+    class="nc-item"
+    [class.is-unread]="isUnread()"
     [routerLink]="commands"
     (click)="selected.emit({ navigates: true })">
     <ng-container [ngTemplateOutlet]="content" />
@@ -627,8 +755,8 @@ export class NotificationItemComponent {
 } @else {
   <button
     type="button"
-    class="notification-item d-flex gap-3 px-3 py-3 w-100 border-0 text-start text-body bg-transparent"
-    [class.notification-item--unread]="!notification().isRead"
+    class="nc-item"
+    [class.is-unread]="isUnread()"
     (click)="selected.emit({ navigates: false })">
     <ng-container [ngTemplateOutlet]="content" />
   </button>
@@ -639,31 +767,32 @@ export class NotificationItemComponent {
     <i [class]="iconGlyph()"></i>
   </span>
 
-  <span class="notification-item__body flex-grow-1">
-    @if (!notification().isRead) {
+  <span class="nc-item__body">
+    @if (isUnread()) {
       <span class="visually-hidden">No leída.</span>
     }
 
-    <span class="d-flex justify-content-between align-items-baseline gap-2">
-      <span class="small text-body-secondary">{{ config().label }}</span>
-      <time
-        class="small text-body-secondary text-nowrap"
-        [attr.datetime]="isoDate()"
-        [title]="absoluteDate()">
+    <span class="nc-item__meta">
+      <span class="nc-item__label">{{ config().label }}</span>
+      <time class="nc-item__time" [attr.datetime]="isoDate()" [title]="absoluteDate()">
         {{ relativeDate() }}
       </time>
     </span>
 
     <!-- Solo texto: nunca innerHTML -->
-    <span class="notification-item__message d-block mt-1">{{ notification().message }}</span>
+    <span class="nc-item__message">{{ notification().message }}</span>
 
     @if (notification().requestId; as requestId) {
-      <span class="d-block small text-body-secondary mt-1">Solicitud #{{ requestId }}</span>
+      <span class="nc-item__request">
+        <i class="fa-solid fa-hashtag" aria-hidden="true"></i> Solicitud {{ requestId }}
+      </span>
     }
   </span>
 
-  @if (!notification().isRead) {
-    <span class="notification-item__dot flex-shrink-0 rounded-circle bg-primary mt-2" aria-hidden="true"></span>
+  <span class="nc-item__dot" aria-hidden="true"></span>
+
+  @if (link()) {
+    <i class="fa-solid fa-chevron-right nc-item__chevron" aria-hidden="true"></i>
   }
 </ng-template>
 ```
@@ -671,55 +800,187 @@ export class NotificationItemComponent {
 ### `notification-item.component.scss`
 
 ```scss
-.notification-item {
-  transition: background-color 0.15s ease-in-out;
+:host {
+  display: block;
+}
+
+.nc-item {
+  --nc-accent: var(--bs-primary);
+
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.875rem;
+  width: 100%;
+  padding: 0.875rem 1rem 0.875rem 1.125rem;
+  border: 0;
+  border-radius: 0.75rem;
+  background: transparent;
+  color: var(--bs-body-color);
+  text-align: start;
+  text-decoration: none;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+
+  // Resaltado de "no leída" en una capa aparte: se desvanece sin pelear con el hover.
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background:
+      linear-gradient(90deg, var(--nc-accent) 0 3px, transparent 3px),
+      var(--bs-primary-bg-subtle);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+
+  &.is-unread::before {
+    opacity: 1;
+  }
+
+  // El contenido va por encima de la capa de resaltado.
+  > * {
+    position: relative;
+  }
 
   &:hover,
   &:focus-visible {
     background-color: var(--bs-tertiary-bg);
   }
 
+  &:hover {
+    transform: translateX(2px);
+  }
+
   &:focus-visible {
     outline: 2px solid var(--bs-primary);
     outline-offset: -2px;
   }
-
-  &--unread {
-    background-color: var(--bs-primary-bg-subtle);
-
-    .notification-item__message {
-      font-weight: 600;
-    }
-  }
 }
 
-.notification-item__icon {
-  width: 2.25rem;
-  height: 2.25rem;
+// "Marcar todas": los resaltados se apagan en ola, de arriba hacia abajo.
+// --nc-order lo define el <li> en el panel.
+:host-context(.nc-panel--marking-all) .nc-item::before {
+  transition-delay: calc(min(var(--nc-order, 0), 12) * 30ms);
 }
 
-.notification-item__body {
-  min-width: 0; // permite que el texto se corte dentro de un flex
+.nc-item__icon {
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+  font-size: 1rem;
+  transition: transform 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.3);
 }
 
-.notification-item__message {
+.nc-item:hover .nc-item__icon {
+  transform: scale(1.08) rotate(-4deg);
+}
+
+.nc-item__body {
+  flex-grow: 1;
+  min-width: 0; // permite cortar el texto dentro de un flex
+}
+
+.nc-item__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.nc-item__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--bs-secondary-color);
+}
+
+.nc-item__time {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--bs-secondary-color);
+}
+
+.nc-item__message {
   display: -webkit-box;
+  margin-top: 0.2rem;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  font-size: 0.875rem;
+  line-height: 1.4;
+
+  .is-unread & {
+    font-weight: 600;
+  }
 }
 
-.notification-item__dot {
+.nc-item__request {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--bs-secondary-color);
+}
+
+.nc-item__dot {
+  flex-shrink: 0;
   width: 0.5rem;
   height: 0.5rem;
+  margin-top: 0.45rem;
+  border-radius: 50%;
+  background: var(--nc-accent);
+  box-shadow: 0 0 0 3px rgba(var(--bs-primary-rgb), 0.18);
+  transform: scale(0);
+  transition: transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.3);
+
+  .is-unread & {
+    transform: scale(1);
+  }
+}
+
+.nc-item__chevron {
+  align-self: center;
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--bs-secondary-color);
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.nc-item:hover .nc-item__chevron,
+.nc-item:focus-visible .nc-item__chevron {
+  opacity: 0.6;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nc-item,
+  .nc-item::before,
+  .nc-item__icon,
+  .nc-item__dot,
+  .nc-item__chevron {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
+
+  .nc-item:hover,
+  .nc-item:hover .nc-item__icon {
+    transform: none;
+  }
 }
 ```
 
-> `bg-*-subtle` y `text-*-emphasis` existen desde Bootstrap 5.3. En 5.2 usa `text-bg-{tono}`.
+> `bg-*-subtle`, `text-*-emphasis` y `--bs-primary-bg-subtle` existen desde Bootstrap 5.3.
 
 ---
 
-## 10. Paso 7 — El centro: campana + cajón
+## 10. Paso 7 — El centro: campana + panel animado
 
 ### `presentation/notification-center/notification-center.component.ts`
 
@@ -729,19 +990,27 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  Injector,
+  PLATFORM_ID,
   afterNextRender,
   computed,
+  effect,
   inject,
   signal,
   viewChild,
 } from '@angular/core';
+import { isPlatformBrowser } from '@angular/common';
 import { NavigationStart, Router } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { filter } from 'rxjs';
-import type Offcanvas from 'bootstrap/js/dist/offcanvas';
 import { NotificationCenterFacade } from '../../application/notification-center.facade';
+import { groupByDay } from '../../application/notification-groups';
 import { AppNotification } from '../../domain/app-notification.model';
 import { NotificationItemComponent } from '../notification-item/notification-item.component';
+
+/** Deben coincidir con las duraciones del SCSS. */
+const RING_ANIMATION_MS = 900;
+const MARK_ALL_ANIMATION_MS = 900;
 
 @Component({
   selector: 'app-notification-center',
@@ -749,16 +1018,26 @@ import { NotificationItemComponent } from '../notification-item/notification-ite
   templateUrl: './notification-center.component.html',
   styleUrl: './notification-center.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: {
+    '(document:keydown.escape)': 'onEscape()',
+    '(document:click)': 'onDocumentClick($event)',
+  },
 })
 export class NotificationCenterComponent {
   protected readonly facade = inject(NotificationCenterFacade);
-  private readonly destroyRef = inject(DestroyRef);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+  private readonly isBrowser = isPlatformBrowser(inject(PLATFORM_ID));
 
-  private readonly panel = viewChild.required<ElementRef<HTMLElement>>('panel');
   private readonly trigger = viewChild.required<ElementRef<HTMLButtonElement>>('trigger');
+  private readonly panel = viewChild.required<ElementRef<HTMLElement>>('panel');
 
   readonly isOpen = signal(false);
-  readonly skeletonRows = [1, 2, 3, 4];
+  readonly isRinging = signal(false);
+  readonly isMarkingAll = signal(false);
+  readonly skeletonRows = [0, 1, 2, 3];
+
+  readonly groups = computed(() => groupByDay(this.facade.notifications()));
 
   readonly badgeText = computed(() => {
     const count = this.facade.unreadCount();
@@ -770,78 +1049,107 @@ export class NotificationCenterComponent {
     return count === 0 ? 'Notificaciones' : `Notificaciones, ${count} sin leer`;
   });
 
-  private offcanvas: Offcanvas | null = null;
-  private navigating = false;
-  private destroyed = false;
+  readonly unreadLabel = computed(() => {
+    const count = this.facade.unreadCount();
+    return count === 1 ? '1 nueva' : `${count} nuevas`;
+  });
+
+  private lastSeenCount: number | null = null;
+  private ringTimer?: ReturnType<typeof setTimeout>;
+  private markAllTimer?: ReturnType<typeof setTimeout>;
 
   constructor() {
-    // afterNextRender solo corre en el navegador: seguro con SSR.
-    afterNextRender(() => {
-      void this.initOffcanvas();
-      this.facade.startUnreadCountPolling();
+    this.facade.startUnreadCountPolling();
+
+    // La campana suena solo cuando el contador SUBE. El primer valor del servidor
+    // se registra sin sonar: así no suena en cada carga de página.
+    effect(() => {
+      const count = this.facade.unreadCount();
+      if (!this.facade.unreadCountReady()) return;
+
+      if (this.lastSeenCount !== null && count > this.lastSeenCount) {
+        this.ring();
+      }
+      this.lastSeenCount = count;
     });
 
-    // Cualquier navegación (clic en una notificación, botón atrás) cierra el cajón.
+    // Cualquier navegación (clic en una notificación, botón atrás) cierra el panel.
     inject(Router)
       .events.pipe(
         filter((event) => event instanceof NavigationStart),
         takeUntilDestroyed(),
       )
-      .subscribe(() => {
-        this.navigating = true;
-        this.offcanvas?.hide();
-      });
+      .subscribe(() => this.close({ restoreFocus: false }));
 
-    this.destroyRef.onDestroy(() => {
-      this.destroyed = true;
-      this.offcanvas?.dispose();
+    inject(DestroyRef).onDestroy(() => {
+      clearTimeout(this.ringTimer);
+      clearTimeout(this.markAllTimer);
     });
   }
 
   toggle(): void {
-    this.offcanvas?.toggle();
+    if (this.isOpen()) {
+      this.close();
+    } else {
+      this.open();
+    }
   }
 
-  close(): void {
-    this.offcanvas?.hide();
+  open(): void {
+    if (this.isOpen()) return;
+
+    this.isOpen.set(true);
+    void this.facade.load();
+
+    // Mueve el foco cuando el panel ya es visible.
+    afterNextRender(() => this.panel().nativeElement.focus({ preventScroll: true }), {
+      injector: this.injector,
+    });
+  }
+
+  close(options: { restoreFocus?: boolean } = {}): void {
+    if (!this.isOpen()) return;
+
+    this.isOpen.set(false);
+    if (options.restoreFocus ?? true) {
+      this.trigger().nativeElement.focus();
+    }
   }
 
   onSelect(notification: AppNotification, navigates: boolean): void {
     void this.facade.markAsRead(notification);
     if (navigates) {
-      this.navigating = true;
+      this.close({ restoreFocus: false });
+    }
+  }
+
+  markAllAsRead(): void {
+    // La clase activa la ola de la animación solo durante esta acción.
+    this.isMarkingAll.set(true);
+    clearTimeout(this.markAllTimer);
+    this.markAllTimer = setTimeout(() => this.isMarkingAll.set(false), MARK_ALL_ANIMATION_MS);
+
+    void this.facade.markAllAsRead();
+  }
+
+  protected onEscape(): void {
+    if (this.isOpen()) {
       this.close();
     }
   }
 
-  private async initOffcanvas(): Promise<void> {
-    const { default: OffcanvasClass } = await import('bootstrap/js/dist/offcanvas');
-    if (this.destroyed) return;
+  protected onDocumentClick(event: MouseEvent): void {
+    // Los clics dentro del componente (campana o panel) no cuentan como "afuera".
+    if (this.isOpen() && !this.host.nativeElement.contains(event.target as Node)) {
+      this.close({ restoreFocus: false });
+    }
+  }
 
-    const element = this.panel().nativeElement;
-    this.offcanvas = OffcanvasClass.getOrCreateInstance(element);
+  private ring(): void {
+    if (!this.isBrowser || this.isRinging()) return;
 
-    const onShow = () => {
-      this.navigating = false;
-      this.isOpen.set(true);
-      void this.facade.load();
-    };
-
-    const onHidden = () => {
-      this.isOpen.set(false);
-      // Si se cerró sin navegar, el foco vuelve a la campana.
-      if (!this.navigating) {
-        this.trigger().nativeElement.focus();
-      }
-    };
-
-    element.addEventListener('show.bs.offcanvas', onShow);
-    element.addEventListener('hidden.bs.offcanvas', onHidden);
-
-    this.destroyRef.onDestroy(() => {
-      element.removeEventListener('show.bs.offcanvas', onShow);
-      element.removeEventListener('hidden.bs.offcanvas', onHidden);
-    });
+    this.isRinging.set(true);
+    this.ringTimer = setTimeout(() => this.isRinging.set(false), RING_ANIMATION_MS);
   }
 }
 ```
@@ -853,52 +1161,73 @@ export class NotificationCenterComponent {
 <button
   #trigger
   type="button"
-  class="btn btn-link position-relative text-body p-2"
-  aria-controls="notificationCenter"
+  class="nc-trigger btn"
+  [class.is-open]="isOpen()"
+  [class.is-ringing]="isRinging()"
+  aria-haspopup="dialog"
+  aria-controls="notificationCenterPanel"
   [attr.aria-expanded]="isOpen()"
   [attr.aria-label]="triggerLabel()"
   (click)="toggle()">
-  <i class="fa-regular fa-bell fa-lg" aria-hidden="true"></i>
+  <i class="nc-trigger__bell fa-regular fa-bell" aria-hidden="true"></i>
   @if (facade.unreadCount() > 0) {
-    <span
-      class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger"
-      aria-hidden="true">
-      {{ badgeText() }}
-    </span>
+    <span class="nc-trigger__badge" aria-hidden="true">{{ badgeText() }}</span>
   }
 </button>
 
-<!-- Cajón -->
+<!-- Fondo oscuro: solo se ve en móvil -->
 <div
+  class="nc-backdrop"
+  [class.is-open]="isOpen()"
+  aria-hidden="true"
+  (click)="close({ restoreFocus: false })"></div>
+
+<!-- Panel -->
+<section
   #panel
-  id="notificationCenter"
-  class="offcanvas offcanvas-end notification-center"
-  tabindex="-1"
-  aria-labelledby="notificationCenterTitle">
+  id="notificationCenterPanel"
+  class="nc-panel"
+  [class.is-open]="isOpen()"
+  [class.nc-panel--marking-all]="isMarkingAll()"
+  role="dialog"
+  aria-modal="false"
+  aria-labelledby="notificationCenterTitle"
+  tabindex="-1">
 
-  <div class="offcanvas-header border-bottom gap-2">
-    <h2 id="notificationCenterTitle" class="offcanvas-title h5 mb-0 me-auto">Notificaciones</h2>
-    <button
-      type="button"
-      class="btn btn-link btn-sm text-decoration-none px-0"
-      [disabled]="facade.unreadCount() === 0"
-      (click)="facade.markAllAsRead()">
-      Marcar todas como leídas
-    </button>
-    <button type="button" class="btn-close ms-2" aria-label="Cerrar notificaciones" (click)="close()"></button>
-  </div>
+  <span class="nc-panel__caret" aria-hidden="true"></span>
+  <span class="nc-panel__handle" aria-hidden="true"></span>
 
-  <div class="offcanvas-body p-0" [attr.aria-busy]="facade.status() === 'loading'">
+  <header class="nc-panel__header">
+    <div class="d-flex align-items-center gap-2">
+      <h2 id="notificationCenterTitle" class="nc-panel__title">Notificaciones</h2>
+      @if (facade.unreadCount() > 0) {
+        <span class="nc-panel__chip">{{ unreadLabel() }}</span>
+      }
+    </div>
+
+    <div class="d-flex align-items-center gap-1">
+      <button
+        type="button"
+        class="btn btn-sm nc-panel__action"
+        [disabled]="facade.unreadCount() === 0"
+        (click)="markAllAsRead()">
+        <i class="fa-solid fa-check-double me-1" aria-hidden="true"></i>Marcar todas
+      </button>
+      <button type="button" class="btn-close nc-panel__close" aria-label="Cerrar notificaciones" (click)="close()"></button>
+    </div>
+  </header>
+
+  <div class="nc-panel__body" [attr.aria-busy]="facade.status() === 'loading'">
     @switch (facade.status()) {
       @case ('loading') {
-        <ul class="list-unstyled mb-0" aria-label="Cargando notificaciones">
+        <ul class="list-unstyled mb-0 p-2" aria-label="Cargando notificaciones">
           @for (row of skeletonRows; track row) {
-            <li class="d-flex gap-3 px-3 py-3 border-bottom placeholder-glow">
-              <span class="placeholder rounded-circle notification-center__skeleton-icon"></span>
+            <li class="d-flex gap-3 p-3 placeholder-wave">
+              <span class="placeholder nc-skeleton__icon"></span>
               <span class="flex-grow-1">
-                <span class="placeholder col-4 d-block mb-2"></span>
-                <span class="placeholder col-11 d-block mb-1"></span>
-                <span class="placeholder col-7 d-block"></span>
+                <span class="placeholder col-4 d-block mb-2 rounded"></span>
+                <span class="placeholder col-11 d-block mb-1 rounded"></span>
+                <span class="placeholder col-7 d-block rounded"></span>
               </span>
             </li>
           }
@@ -906,41 +1235,48 @@ export class NotificationCenterComponent {
       }
 
       @case ('error') {
-        <div class="p-3">
-          <div class="alert alert-danger mb-0" role="alert">
-            <p class="mb-2">No pudimos cargar tus notificaciones.</p>
-            <button type="button" class="btn btn-outline-danger btn-sm" (click)="facade.load()">
-              Reintentar
-            </button>
-          </div>
+        <div class="nc-state" role="alert">
+          <span class="nc-state__icon nc-state__icon--error">
+            <i class="fa-solid fa-plug-circle-exclamation" aria-hidden="true"></i>
+          </span>
+          <p class="nc-state__title">No pudimos cargar tus notificaciones</p>
+          <button type="button" class="btn btn-sm btn-outline-danger" (click)="facade.load()">Reintentar</button>
         </div>
       }
 
       @default {
-        @if (facade.notifications().length === 0) {
-          <div class="d-flex flex-column align-items-center justify-content-center text-center text-body-secondary p-5">
-            <i class="fa-regular fa-bell fa-2x mb-3" aria-hidden="true"></i>
-            <p class="mb-0">No tienes notificaciones.</p>
+        @if (groups().length === 0) {
+          <div class="nc-state">
+            <span class="nc-state__icon nc-state__icon--done">
+              <i class="fa-solid fa-check" aria-hidden="true"></i>
+            </span>
+            <p class="nc-state__title">¡Estás al día!</p>
+            <p class="nc-state__text">Cuando pase algo con tus solicitudes, lo verás aquí.</p>
           </div>
         } @else {
-          <ul class="list-group list-group-flush">
-            @for (notification of facade.notifications(); track notification.id) {
-              <li class="list-group-item p-0">
-                <app-notification-item
-                  [notification]="notification"
-                  (selected)="onSelect(notification, $event.navigates)" />
-              </li>
-            }
-          </ul>
+          @for (group of groups(); track group.key) {
+            <section class="nc-group" [attr.aria-labelledby]="'nc-group-' + group.key">
+              <h3 class="nc-group__title" [id]="'nc-group-' + group.key">{{ group.label }}</h3>
+              <ul class="nc-group__list">
+                @for (entry of group.entries; track entry.notification.id) {
+                  <li class="nc-group__item" [style.--nc-order]="entry.order">
+                    <app-notification-item
+                      [notification]="entry.notification"
+                      (selected)="onSelect(entry.notification, $event.navigates)" />
+                  </li>
+                }
+              </ul>
+            </section>
+          }
 
           @if (facade.hasMore()) {
-            <div class="p-3 text-center">
+            <div class="nc-more">
               @if (facade.loadMoreFailed()) {
                 <p class="small text-danger mb-2">No se pudieron cargar más. Inténtalo de nuevo.</p>
               }
               <button
                 type="button"
-                class="btn btn-outline-secondary btn-sm"
+                class="btn btn-sm btn-outline-secondary rounded-pill px-3"
                 [disabled]="facade.loadingMore()"
                 (click)="facade.loadMore()">
                 @if (facade.loadingMore()) {
@@ -954,23 +1290,426 @@ export class NotificationCenterComponent {
       }
     }
   </div>
-</div>
+</section>
 ```
+
+> `[style.--nc-order]` es un binding de estilo a una variable CSS, no `ngStyle`: respeta la regla del proyecto.
 
 ### `notification-center.component.scss`
 
 ```scss
-.notification-center {
-  --bs-offcanvas-width: 400px;
+// ── Tokens ──────────────────────────────────────────────────────────
+:host {
+  --nc-width: 380px;
+  --nc-radius: 1rem;
+  --nc-z: 1070;
+  --nc-ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  --nc-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-  @media (max-width: 575.98px) {
-    --bs-offcanvas-width: 100vw;
+  position: relative;
+  display: inline-block;
+}
+
+// ── Campana ─────────────────────────────────────────────────────────
+.nc-trigger {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--bs-body-color);
+  transition: background-color 0.2s ease;
+
+  &:hover,
+  &.is-open {
+    background-color: var(--bs-tertiary-bg);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--bs-primary);
+    outline-offset: 2px;
   }
 }
 
-.notification-center__skeleton-icon {
-  width: 2.25rem;
-  height: 2.25rem;
+.nc-trigger__bell {
+  font-size: 1.15rem;
+  transform-origin: 50% 10%; // pivota desde el "colgador", como una campana real
+}
+
+.nc-trigger.is-ringing .nc-trigger__bell {
+  animation: nc-ring 0.9s ease-in-out;
+}
+
+.nc-trigger__badge {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.05rem;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--bs-danger);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1.15rem;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--bs-body-bg); // se despega del ícono
+  animation: nc-badge-in 0.35s var(--nc-ease-spring) both;
+}
+
+.nc-trigger.is-ringing .nc-trigger__badge {
+  animation: nc-badge-bump 0.5s var(--nc-ease-spring);
+}
+
+// ── Panel: tarjeta flotante que crece desde la campana ─────────────
+.nc-panel {
+  position: absolute;
+  top: calc(100% + 0.75rem);
+  right: -0.5rem;
+  z-index: var(--nc-z);
+  display: flex;
+  flex-direction: column;
+  width: var(--nc-width);
+  max-height: min(70vh, 560px);
+  border: 1px solid var(--bs-border-color-translucent);
+  border-radius: var(--nc-radius);
+  background: var(--bs-body-bg);
+  box-shadow:
+    0 1.5rem 3rem -0.75rem rgba(0, 0, 0, 0.25),
+    0 0.25rem 0.75rem rgba(0, 0, 0, 0.08);
+  outline: none;
+
+  // Origen en la campana: 1.75rem desde el borde derecho del panel.
+  transform-origin: calc(100% - 1.75rem) 0;
+  opacity: 0;
+  transform: translateY(-0.5rem) scale(0.9);
+  visibility: hidden;
+
+  // Cierre: rápido y sin rebote. visibility se oculta AL FINAL.
+  transition:
+    opacity 0.16s ease-in,
+    transform 0.16s ease-in,
+    visibility 0s linear 0.16s;
+
+  &.is-open {
+    opacity: 1;
+    transform: none;
+    visibility: visible;
+
+    // Apertura: con resorte. visibility se muestra AL INICIO.
+    transition:
+      opacity 0.2s var(--nc-ease-out),
+      transform 0.32s var(--nc-ease-spring),
+      visibility 0s;
+  }
+}
+
+// Vidrio esmerilado donde el navegador lo soporte.
+@supports (backdrop-filter: blur(1px)) {
+  .nc-panel {
+    background: rgba(var(--bs-body-bg-rgb), 0.82);
+    backdrop-filter: blur(18px) saturate(180%);
+  }
+}
+
+.nc-panel__caret {
+  position: absolute;
+  top: -0.4rem;
+  right: 1.35rem; // centro de la campana menos la mitad de la flecha
+  width: 0.8rem;
+  height: 0.8rem;
+  border-top: 1px solid var(--bs-border-color-translucent);
+  border-left: 1px solid var(--bs-border-color-translucent);
+  background: var(--bs-body-bg);
+  transform: rotate(45deg);
+}
+
+.nc-panel__handle {
+  display: none;
+}
+
+.nc-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 1rem 0.75rem 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--bs-border-color-translucent);
+}
+
+.nc-panel__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.nc-panel__chip {
+  flex-shrink: 0;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--bs-primary-bg-subtle);
+  color: var(--bs-primary-text-emphasis);
+  font-size: 0.75rem;
+  font-weight: 600;
+  animation: nc-fade-up 0.3s var(--nc-ease-out) both;
+}
+
+.nc-panel__action {
+  border-radius: 999px;
+  color: var(--bs-primary);
+  font-weight: 500;
+
+  &:hover:not(:disabled) {
+    background: var(--bs-primary-bg-subtle);
+  }
+}
+
+.nc-panel__close {
+  transition: transform 0.2s ease;
+
+  &:hover {
+    transform: rotate(90deg);
+  }
+}
+
+.nc-panel__body {
+  overflow-y: auto;
+  overscroll-behavior: contain; // el scroll no se pasa a la página
+  padding: 0.25rem 0.5rem 0.5rem;
+  scrollbar-width: thin;
+}
+
+// ── Grupos por día ──────────────────────────────────────────────────
+.nc-group__title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 0.75rem 0.75rem 0.35rem;
+  background: linear-gradient(rgba(var(--bs-body-bg-rgb), 0.96) 70%, transparent);
+  color: var(--bs-secondary-color);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.nc-group__list {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+// Cascada: se reproduce cada vez que el panel se abre.
+.nc-panel.is-open .nc-group__item {
+  animation: nc-item-in 0.26s var(--nc-ease-out) both;
+  animation-delay: calc(min(var(--nc-order, 0), 8) * 35ms + 60ms);
+}
+
+.nc-more {
+  padding: 0.75rem;
+  text-align: center;
+}
+
+// ── Estados ─────────────────────────────────────────────────────────
+.nc-state {
+  display: grid;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 2.5rem 1.5rem;
+  text-align: center;
+  animation: nc-fade-up 0.35s var(--nc-ease-out) both;
+}
+
+.nc-state__icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  font-size: 1.35rem;
+
+  &--done {
+    background: var(--bs-success-bg-subtle);
+    color: var(--bs-success-text-emphasis);
+
+    // Anillo que pulsa tres veces y se detiene.
+    &::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border: 2px solid var(--bs-success);
+      border-radius: inherit;
+      opacity: 0;
+      animation: nc-pulse 2.4s ease-out 0.4s 3;
+    }
+  }
+
+  &--error {
+    background: var(--bs-danger-bg-subtle);
+    color: var(--bs-danger-text-emphasis);
+  }
+}
+
+.nc-panel.is-open .nc-state__icon--done i {
+  animation: nc-pop 0.4s var(--nc-ease-spring) 0.15s both;
+}
+
+.nc-state__title {
+  margin: 0.5rem 0 0;
+  font-weight: 600;
+}
+
+.nc-state__text {
+  max-width: 16rem;
+  margin: 0;
+  color: var(--bs-secondary-color);
+  font-size: 0.875rem;
+}
+
+.nc-skeleton__icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+}
+
+.nc-backdrop {
+  display: none;
+}
+
+// ── Móvil: hoja inferior ────────────────────────────────────────────
+@media (max-width: 575.98px) {
+  .nc-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--nc-z) - 1);
+    display: block;
+    background: rgba(0, 0, 0, 0.4);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0s linear 0.2s;
+
+    &.is-open {
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.25s ease, visibility 0s;
+    }
+  }
+
+  .nc-panel {
+    position: fixed;
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    max-height: 85vh;
+    padding-bottom: env(safe-area-inset-bottom); // respeta la barra del iPhone
+    border-radius: 1.25rem 1.25rem 0 0;
+    opacity: 1;
+    transform: translateY(100%);
+    transition:
+      transform 0.22s ease-in,
+      visibility 0s linear 0.22s;
+
+    &.is-open {
+      transform: none;
+      transition:
+        transform 0.32s var(--nc-ease-out),
+        visibility 0s;
+    }
+  }
+
+  .nc-panel__caret {
+    display: none;
+  }
+
+  .nc-panel__handle {
+    display: block;
+    width: 2.5rem;
+    height: 0.3rem;
+    margin: 0.6rem auto 0;
+    border-radius: 999px;
+    background: var(--bs-border-color);
+  }
+}
+
+// ── Keyframes ───────────────────────────────────────────────────────
+@keyframes nc-ring {
+  0%, 100% { transform: rotate(0); }
+  15% { transform: rotate(14deg); }
+  30% { transform: rotate(-12deg); }
+  45% { transform: rotate(9deg); }
+  60% { transform: rotate(-6deg); }
+  75% { transform: rotate(3deg); }
+}
+
+@keyframes nc-badge-in {
+  from { transform: scale(0); }
+  to { transform: scale(1); }
+}
+
+@keyframes nc-badge-bump {
+  0%, 100% { transform: scale(1); }
+  40% { transform: scale(1.35); }
+}
+
+@keyframes nc-item-in {
+  from { opacity: 0; transform: translateY(0.5rem); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes nc-fade-up {
+  from { opacity: 0; transform: translateY(0.25rem); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes nc-pop {
+  from { transform: scale(0) rotate(-20deg); }
+  to { transform: scale(1) rotate(0); }
+}
+
+@keyframes nc-pulse {
+  0% { opacity: 0.6; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+
+// ── Movimiento reducido: todo se vuelve un fundido corto ────────────
+@media (prefers-reduced-motion: reduce) {
+  .nc-panel,
+  .nc-panel.is-open,
+  .nc-backdrop,
+  .nc-backdrop.is-open {
+    transform: none !important;
+    transition-property: opacity, visibility !important;
+    transition-duration: 0.12s !important;
+  }
+
+  .nc-panel:not(.is-open) {
+    opacity: 0 !important;
+  }
+
+  .nc-trigger.is-ringing .nc-trigger__bell,
+  .nc-trigger__badge,
+  .nc-trigger.is-ringing .nc-trigger__badge,
+  .nc-panel.is-open .nc-group__item,
+  .nc-panel__chip,
+  .nc-state,
+  .nc-state__icon--done::after,
+  .nc-panel.is-open .nc-state__icon--done i {
+    animation: none !important;
+  }
+
+  .nc-panel__close:hover {
+    transform: none;
+  }
 }
 ```
 
@@ -986,15 +1725,21 @@ En el template del header (`shared/components/header` o `core/layout`):
 
 Y en el `imports` del componente del header, `NotificationCenterComponent`.
 
-**Tres cuidados:**
+**Cinco cuidados:**
 
 1. **Solo con sesión iniciada.** El polling llama a la API cada 60 s. Si el header se pinta antes del login de MSAL, llegan 401 en cadena. Renderiza `<app-notification-center />` solo cuando haya usuario autenticado.
 2. **Al cerrar sesión**, llama a `facade.stopUnreadCountPolling()` en el flujo de logout de `app.ts`.
-3. **Si el cajón aparece cortado o en el lugar equivocado**, algún contenedor padre del header tiene `transform`, `filter` o `will-change`. Esas propiedades hacen que `position: fixed` se mida contra ese contenedor y no contra la ventana. Quítalas del padre o mueve el componente fuera de ese contenedor.
+3. **Si el panel aparece cortado**, el header o un contenedor padre tiene `overflow: hidden`. El panel flota por fuera del header y ese `overflow` lo recorta. Quítalo del contenedor que lo tenga.
+4. **Si el panel queda debajo del contenido de la página**, el header crea su propio contexto de apilamiento con un `z-index` bajo. Sube el `z-index` del header o ajusta `--nc-z`.
+5. **La campana debe estar a la derecha del header.** La tarjeta se alinea a la derecha de la campana. Si la campana va a la izquierda, cambia `right` por `left` en `.nc-panel` y `.nc-panel__caret`, y usa `transform-origin: 1.75rem 0`.
+
+> En móvil la hoja usa `position: fixed`. Si algún contenedor padre tiene `transform`, `filter` o `will-change`, la hoja se ubicará respecto a ese contenedor y no respecto a la pantalla.
 
 ---
 
 ## 12. Pruebas
+
+### Unitarias
 
 ```ts
 describe('notification.mapper', () => {
@@ -1006,6 +1751,31 @@ describe('notification.mapper', () => {
   it('convierte un tipo desconocido en General', () => {
     const n = toAppNotification({ ...dto, notificationType: 'NUEVO_TIPO' });
     expect(n.type).toBe(NotificationType.General);
+  });
+});
+
+describe('groupByDay', () => {
+  const now = new Date(2026, 8, 25, 10, 0);
+  const at = (date: Date, id: number) => ({ ...notification, id, createdAt: date });
+
+  it('agrupa en Hoy, Ayer, Esta semana y Anteriores', () => {
+    const groups = groupByDay(
+      [
+        at(new Date(2026, 8, 25, 8, 0), 4),
+        at(new Date(2026, 8, 24, 20, 0), 3),
+        at(new Date(2026, 8, 21, 9, 0), 2),
+        at(new Date(2026, 7, 1, 9, 0), 1),
+      ],
+      now,
+    );
+
+    expect(groups.map((g) => g.label)).toEqual(['Hoy', 'Ayer', 'Esta semana', 'Anteriores']);
+  });
+
+  it('conserva la posición global para la cascada', () => {
+    const groups = groupByDay([at(new Date(2026, 8, 25, 8, 0), 2), at(new Date(2026, 8, 24, 8, 0), 1)], now);
+
+    expect(groups[1].entries[0].order).toBe(1);
   });
 });
 
@@ -1024,13 +1794,26 @@ describe('NotificationCenterFacade', () => {
 });
 ```
 
-**Pruebas manuales que no se pueden saltar:**
+### Revisión de las animaciones
 
-- Solo con teclado: Tab hasta la campana, Enter abre, Tab recorre los ítems, Esc cierra y el foco vuelve a la campana.
+Hazla con quien pidió el cambio al lado. Las animaciones se juzgan viéndolas, no leyéndolas.
+
+- **Apertura:** la tarjeta nace desde la campana, no desde el centro ni desde una esquina.
+- **Cascada:** con 20 notificaciones, las primeras 8 entran escalonadas y el resto aparece sin esperar.
+- **Campana:** suena al simular una notificación nueva y **no** suena al recargar la página. Para simularla, devuelve un contador mayor en el mock del servicio.
+- **Marcar todas:** los resaltados se apagan en ola, de arriba hacia abajo.
+- **Fluidez:** en DevTools → Performance, graba una apertura y verifica que no haya cuadros rojos (tareas largas).
+- **Movimiento reducido:** en DevTools → Rendering → *Emulate CSS media feature prefers-reduced-motion*, todo debe verse como un fundido corto.
+- **Vidrio:** en un navegador sin `backdrop-filter`, el panel se ve con fondo sólido, no transparente.
+
+### Interacción y accesibilidad
+
+- Solo con teclado: Tab hasta la campana, Enter abre y el foco entra al panel, Tab recorre los ítems, Esc cierra y el foco vuelve a la campana.
+- Clic afuera cierra el panel; clic dentro no.
 - Con lector de pantalla: la campana anuncia "Notificaciones, 3 sin leer" y cada ítem no leído anuncia "No leída".
 - Ctrl+clic en una notificación: se abre en otra pestaña y la marca como leída.
-- Un mensaje de 500 caracteres: se corta en 3 líneas sin romper el diseño.
-- Pantalla de 360 px: el cajón ocupa todo el ancho.
+- Un mensaje de 500 caracteres se corta en 3 líneas sin romper el diseño.
+- En 360 px: la hoja sube desde abajo, el fondo se oscurece y tocarlo la cierra.
 - Con SSR activo: la página renderiza sin errores de `document is not defined`.
 
 ---
@@ -1042,8 +1825,12 @@ describe('NotificationCenterFacade', () => {
 - [ ] Rutas reales configuradas en `notification-type.config.ts`.
 - [ ] Backend: paginación keyset, contador de no leídas y endpoints filtrados por el usuario del token.
 - [ ] Backend: fechas con zona horaria (o confirmado que son UTC).
-- [ ] `@types/bootstrap` instalado; Offcanvas cargado con `import()` dinámico.
 - [ ] El centro se renderiza solo con sesión iniciada y el polling se detiene al cerrar sesión.
+- [ ] El header no tiene `overflow: hidden` ni un `z-index` que tape el panel.
+- [ ] La campana suena solo cuando llegan notificaciones nuevas, no al cargar la página.
+- [ ] Todas las animaciones usan solo `transform` y `opacity`.
+- [ ] Probado con `prefers-reduced-motion: reduce`.
+- [ ] Probado en móvil como hoja inferior.
 - [ ] El mensaje se pinta con interpolación, nunca con `innerHTML`.
 - [ ] "No leída" se distingue sin depender del color.
 - [ ] Componentes con `OnPush`, `input()`, `output()` y signals; sin `ngClass` ni `ngStyle`.
