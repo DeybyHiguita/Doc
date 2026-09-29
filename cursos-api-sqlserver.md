@@ -3,7 +3,7 @@
 Guía paso a paso para construir el backend del módulo de **Cursos** en DOCCB, siguiendo la arquitectura de `DOCCB Backend`. Es el backend que consumen [crud-cursos-angular.md](crud-cursos-angular.md) y [listado-cursos-angular.md](listado-cursos-angular.md).
 
 - **Stack:** .NET 8 · ASP.NET Core · Entity Framework Core 8 · SQL Server
-- **Base de datos:** `DB` · esquema `dbo` · tablas y atributos en `snake_case` (`dbo.nombre_tabla`, `nombre_atributo`)
+- **Base de datos:** `DB` · esquema `dbo` · tablas y atributos en inglés y `snake_case` (`dbo.table_name`, `column_name`)
 - **Proyectos:** `WebApp` · `DOCCB.Application` · `DOCCB.Domain` · `DOCCB.Infraestructure`
 
 ---
@@ -12,14 +12,14 @@ Guía paso a paso para construir el backend del módulo de **Cursos** en DOCCB, 
 
 | # | Tema | Decisión |
 |---|---|---|
-| 1 | **Convención de nombres.** Las tablas nuevas van en `snake_case` y en español; las entidades C# siguen en PascalCase e inglés, como el resto de DOCCB. | La configuración de EF Core traduce cada propiedad a su columna con `ToTable` y `HasColumnName`. El código no cambia de estilo y la base de datos respeta su convención. |
+| 1 | **Convención de nombres.** La base de datos usa inglés y `snake_case` (`dbo.course`, `due_date`); las entidades C# usan inglés y PascalCase, como el resto de DOCCB. | La configuración de EF Core traduce cada propiedad a su columna con `ToTable` y `HasColumnName`. El código no cambia de estilo y la base de datos respeta su convención. |
 | 2 | **De dónde salen los usuarios.** La guía de Angular proponía Microsoft Graph, pero DOCCB ya tiene su tabla de usuarios (`dbo.[User]`) con carga masiva. | Se asigna contra `dbo.[User]` con una llave foránea real: sin permisos de Graph y sin copias de nombres que se desactualizan. Si hay empleados que no están en esa tabla, vuelve a Graph (sección 12). |
 | 3 | **"Hoy" depende del servidor.** Si el servidor corre en UTC, entre las 7 p. m. y la medianoche de Colombia ya es "mañana" y una fecha de hoy se rechaza como pasada. | "Hoy" se calcula siempre en la zona `America/Bogota`. |
 | 4 | **Duplicados por carrera.** Validar en el servicio no basta: dos personas pueden guardar el mismo nombre al mismo tiempo. | Índices únicos filtrados en la base de datos. El servicio valida primero para dar un buen mensaje, y si aun así el índice rechaza, responde `409` con el mismo mensaje. |
-| 5 | **Eliminar un curso con usuarios** borra el historial de quién debía tomarlo. | Si tiene grupos asignados, borrado lógico (`eliminado = 1`, igual que `Removed` en `Request`). Si no tiene, borrado físico. |
+| 5 | **Eliminar un curso con usuarios** borra el historial de quién debía tomarlo. | Si tiene grupos asignados, borrado lógico (`removed = 1`, igual que `Removed` en `Request`). Si no tiene, borrado físico. |
 | 6 | **El repositorio genérico no alcanza.** `IGenericRepository<T>` no expresa listados paginados con subconsultas ni cargas con `ThenInclude`. | Repositorio propio `ICourseRepository` en `Contracts/Persistence`, implementado en `Infraestructure`. Mismo patrón que el resto: interfaz en Application, implementación en Infraestructura, sin saltarse capas. |
 | 7 | **Modalidad.** Un entero en la base de datos no se entiende al consultarla a mano. | Se guarda como texto (`VIRTUAL`, `PRESENCIAL`) con `CHECK`. En C# es un `enum`. |
-| 8 | **Integridad grupo ↔ curso.** Un usuario podría quedar ligado a un grupo de otro curso por un error de código. | La tabla de usuarios lleva `id_curso` y una llave foránea compuesta `(id_asignacion, id_curso)`: la base de datos no permite esa inconsistencia. |
+| 8 | **Integridad grupo ↔ curso.** Un usuario podría quedar ligado a un grupo de otro curso por un error de código. | La tabla de usuarios lleva `course_id` y una llave foránea compuesta `(assignment_id, course_id)`: la base de datos no permite esa inconsistencia. |
 | 9 | **Fuente del esquema.** DOCCB versiona scripts en `Persistence/Scripts SQL`. | El script SQL crea las tablas; la configuración de EF solo las describe. Si el equipo usa migraciones, genera la migración y compárala con el script antes de aplicarla. |
 
 ---
@@ -86,21 +86,21 @@ WebApp/Controllers/
 ```text
 dbo.[User] (existente)
      ▲
-     │ id_usuario
+     │ user_id
      │
-dbo.curso ──< dbo.curso_asignacion ──< dbo.curso_asignacion_usuario
-  id            id                        id_asignacion ┐ FK compuesta a
-  nombre        id_curso ─────────────────id_curso      ┘ (id, id_curso)
-  modalidad     fecha_limite              id_usuario
-  id_externo
-  eliminado
+dbo.course ──< dbo.course_assignment ──< dbo.course_assignment_user
+  id             id                        assignment_id ┐ FK compuesta a
+  name           course_id ────────────────course_id     ┘ (id, course_id)
+  modality       due_date                  user_id
+  external_id
+  removed
 ```
 
 | Tabla | Qué guarda |
 |---|---|
-| `dbo.curso` | El curso: nombre, modalidad, ID del sistema externo y auditoría. |
-| `dbo.curso_asignacion` | Un **grupo** de asignación del curso, con su fecha límite. Un curso puede tener varios. |
-| `dbo.curso_asignacion_usuario` | Qué usuarios están en cada grupo. Un usuario solo puede estar en un grupo por curso. |
+| `dbo.course` | El curso: nombre, modalidad, ID del sistema externo y auditoría. |
+| `dbo.course_assignment` | Un **grupo** de asignación del curso, con su fecha límite. Un curso puede tener varios. |
+| `dbo.course_assignment_user` | Qué usuarios están en cada grupo. Un usuario solo puede estar en un grupo por curso. |
 
 ### `Persistence/Scripts SQL/Cursos.sql`
 
@@ -119,95 +119,95 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 /* ─────────────────────────────────────────────────────────────────────
-   dbo.curso
+   dbo.course
    ───────────────────────────────────────────────────────────────────── */
-IF OBJECT_ID(N'dbo.curso', N'U') IS NULL
+IF OBJECT_ID(N'dbo.course', N'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.curso
+    CREATE TABLE dbo.course
     (
-        id                  INT            IDENTITY(1, 1) NOT NULL,
-        nombre              NVARCHAR(150)  NOT NULL,
-        modalidad           VARCHAR(20)    NOT NULL,
-        id_externo          VARCHAR(50)    NULL,
-        eliminado           BIT            NOT NULL CONSTRAINT df_curso_eliminado DEFAULT (0),
-        fecha_creacion      DATETIME2(0)   NOT NULL CONSTRAINT df_curso_fecha_creacion DEFAULT (SYSUTCDATETIME()),
-        creado_por          NVARCHAR(150)  NOT NULL,
-        fecha_actualizacion DATETIME2(0)   NULL,
-        actualizado_por     NVARCHAR(150)  NULL,
+        id           INT            IDENTITY(1, 1) NOT NULL,
+        name         NVARCHAR(150)  NOT NULL,
+        modality     VARCHAR(20)    NOT NULL,
+        external_id  VARCHAR(50)    NULL,
+        removed      BIT            NOT NULL CONSTRAINT df_course_removed DEFAULT (0),
+        created_date DATETIME2(0)   NOT NULL CONSTRAINT df_course_created_date DEFAULT (SYSUTCDATETIME()),
+        created_by   NVARCHAR(150)  NOT NULL,
+        updated_date DATETIME2(0)   NULL,
+        updated_by   NVARCHAR(150)  NULL,
 
-        CONSTRAINT pk_curso PRIMARY KEY CLUSTERED (id),
-        CONSTRAINT ck_curso_nombre CHECK (LEN(LTRIM(nombre)) > 0),
-        CONSTRAINT ck_curso_modalidad CHECK (modalidad IN ('VIRTUAL', 'PRESENCIAL')),
-        CONSTRAINT ck_curso_id_externo CHECK (id_externo IS NULL OR (LEN(id_externo) > 0 AND CHARINDEX(' ', id_externo) = 0))
+        CONSTRAINT pk_course PRIMARY KEY CLUSTERED (id),
+        CONSTRAINT ck_course_name CHECK (LEN(LTRIM(name)) > 0),
+        CONSTRAINT ck_course_modality CHECK (modality IN ('VIRTUAL', 'PRESENCIAL')),
+        CONSTRAINT ck_course_external_id CHECK (external_id IS NULL OR (LEN(external_id) > 0 AND CHARINDEX(' ', external_id) = 0))
     );
 
     -- El mismo nombre puede existir en las dos modalidades, pero no dos veces en la misma.
     -- Solo cuenta entre cursos no eliminados: un nombre borrado se puede volver a usar.
-    CREATE UNIQUE INDEX ux_curso_nombre_modalidad
-        ON dbo.curso (nombre, modalidad)
-        WHERE eliminado = 0;
+    CREATE UNIQUE INDEX ux_course_name_modality
+        ON dbo.course (name, modality)
+        WHERE removed = 0;
 
     -- Un ID del sistema externo pertenece a un solo curso.
-    CREATE UNIQUE INDEX ux_curso_id_externo
-        ON dbo.curso (id_externo)
-        WHERE id_externo IS NOT NULL;
+    CREATE UNIQUE INDEX ux_course_external_id
+        ON dbo.course (external_id)
+        WHERE external_id IS NOT NULL;
 END;
 GO
 
 /* ─────────────────────────────────────────────────────────────────────
-   dbo.curso_asignacion — grupos con fecha límite
+   dbo.course_assignment — grupos con fecha límite
    ───────────────────────────────────────────────────────────────────── */
-IF OBJECT_ID(N'dbo.curso_asignacion', N'U') IS NULL
+IF OBJECT_ID(N'dbo.course_assignment', N'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.curso_asignacion
+    CREATE TABLE dbo.course_assignment
     (
-        id             INT            IDENTITY(1, 1) NOT NULL,
-        id_curso       INT            NOT NULL,
-        fecha_limite   DATE           NOT NULL,
-        fecha_creacion DATETIME2(0)   NOT NULL CONSTRAINT df_curso_asignacion_fecha_creacion DEFAULT (SYSUTCDATETIME()),
-        creado_por     NVARCHAR(150)  NOT NULL,
+        id           INT            IDENTITY(1, 1) NOT NULL,
+        course_id    INT            NOT NULL,
+        due_date     DATE           NOT NULL,
+        created_date DATETIME2(0)   NOT NULL CONSTRAINT df_course_assignment_created_date DEFAULT (SYSUTCDATETIME()),
+        created_by   NVARCHAR(150)  NOT NULL,
 
-        CONSTRAINT pk_curso_asignacion PRIMARY KEY CLUSTERED (id),
-        -- (id, id_curso) permite que la tabla de usuarios garantice que el grupo es de ese curso.
-        CONSTRAINT uq_curso_asignacion_id_curso UNIQUE (id, id_curso),
-        CONSTRAINT fk_curso_asignacion_curso FOREIGN KEY (id_curso) REFERENCES dbo.curso (id)
+        CONSTRAINT pk_course_assignment PRIMARY KEY CLUSTERED (id),
+        -- (id, course_id) permite que la tabla de usuarios garantice que el grupo es de ese curso.
+        CONSTRAINT uq_course_assignment_id_course_id UNIQUE (id, course_id),
+        CONSTRAINT fk_course_assignment_course FOREIGN KEY (course_id) REFERENCES dbo.course (id)
     );
 
-    CREATE INDEX ix_curso_asignacion_id_curso
-        ON dbo.curso_asignacion (id_curso)
-        INCLUDE (fecha_limite);
+    CREATE INDEX ix_course_assignment_course_id
+        ON dbo.course_assignment (course_id)
+        INCLUDE (due_date);
 END;
 GO
 
 /* ─────────────────────────────────────────────────────────────────────
-   dbo.curso_asignacion_usuario — usuarios de cada grupo
+   dbo.course_assignment_user — usuarios de cada grupo
    ───────────────────────────────────────────────────────────────────── */
-IF OBJECT_ID(N'dbo.curso_asignacion_usuario', N'U') IS NULL
+IF OBJECT_ID(N'dbo.course_assignment_user', N'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.curso_asignacion_usuario
+    CREATE TABLE dbo.course_assignment_user
     (
-        id_asignacion  INT           NOT NULL,
-        id_curso       INT           NOT NULL,
-        id_usuario     INT           NOT NULL,
-        fecha_creacion DATETIME2(0)  NOT NULL CONSTRAINT df_curso_asignacion_usuario_fecha_creacion DEFAULT (SYSUTCDATETIME()),
+        assignment_id INT            NOT NULL,
+        course_id     INT            NOT NULL,
+        user_id       INT            NOT NULL,
+        created_date  DATETIME2(0)   NOT NULL CONSTRAINT df_course_assignment_user_created_date DEFAULT (SYSUTCDATETIME()),
 
-        CONSTRAINT pk_curso_asignacion_usuario PRIMARY KEY CLUSTERED (id_asignacion, id_usuario),
-        CONSTRAINT fk_curso_asignacion_usuario_asignacion
-            FOREIGN KEY (id_asignacion, id_curso)
-            REFERENCES dbo.curso_asignacion (id, id_curso)
+        CONSTRAINT pk_course_assignment_user PRIMARY KEY CLUSTERED (assignment_id, user_id),
+        CONSTRAINT fk_course_assignment_user_assignment
+            FOREIGN KEY (assignment_id, course_id)
+            REFERENCES dbo.course_assignment (id, course_id)
             ON DELETE CASCADE,
-        CONSTRAINT fk_curso_asignacion_usuario_usuario
-            FOREIGN KEY (id_usuario)
+        CONSTRAINT fk_course_assignment_user_user
+            FOREIGN KEY (user_id)
             REFERENCES dbo.[User] ([Id])
     );
 
     -- Un usuario solo puede estar en un grupo por curso.
-    CREATE UNIQUE INDEX ux_curso_asignacion_usuario_curso_usuario
-        ON dbo.curso_asignacion_usuario (id_curso, id_usuario);
+    CREATE UNIQUE INDEX ux_course_assignment_user_course_user
+        ON dbo.course_assignment_user (course_id, user_id);
 
     -- "¿En qué cursos está este usuario?"
-    CREATE INDEX ix_curso_asignacion_usuario_id_usuario
-        ON dbo.curso_asignacion_usuario (id_usuario);
+    CREATE INDEX ix_course_assignment_user_user_id
+        ON dbo.course_assignment_user (user_id);
 END;
 GO
 ```
@@ -219,24 +219,24 @@ GO
 Útiles para revisar los datos a mano o para agregarlas a `Consultas Comunes.sql`:
 
 ```sql
-DECLARE @hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'SA Pacific Standard Time' AS DATE);
+DECLARE @today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'SA Pacific Standard Time' AS DATE);
 
 -- Cursos activos con usuarios asignados y próxima fecha límite
 SELECT  c.id,
-        c.nombre,
-        c.modalidad,
-        c.id_externo,
-        usuarios          = (SELECT COUNT(*) FROM dbo.curso_asignacion_usuario u WHERE u.id_curso = c.id),
-        proxima_fecha     = COALESCE(
-                               (SELECT MIN(a.fecha_limite) FROM dbo.curso_asignacion a WHERE a.id_curso = c.id AND a.fecha_limite >= @hoy),
-                               (SELECT MAX(a.fecha_limite) FROM dbo.curso_asignacion a WHERE a.id_curso = c.id AND a.fecha_limite < @hoy))
-FROM    dbo.curso c
-WHERE   c.eliminado = 0
-ORDER BY c.nombre;
+        c.name,
+        c.modality,
+        c.external_id,
+        assigned_users = (SELECT COUNT(*) FROM dbo.course_assignment_user u WHERE u.course_id = c.id),
+        next_due_date  = COALESCE(
+                               (SELECT MIN(a.due_date) FROM dbo.course_assignment a WHERE a.course_id = c.id AND a.due_date >= @today),
+                               (SELECT MAX(a.due_date) FROM dbo.course_assignment a WHERE a.course_id = c.id AND a.due_date < @today))
+FROM    dbo.course c
+WHERE   c.removed = 0
+ORDER BY c.name;
 
 -- Cursos virtuales sin ID externo (los "pendientes")
-SELECT id, nombre FROM dbo.curso
-WHERE  eliminado = 0 AND modalidad = 'VIRTUAL' AND id_externo IS NULL;
+SELECT id, name FROM dbo.course
+WHERE  removed = 0 AND modality = 'VIRTUAL' AND external_id IS NULL;
 ```
 
 ---
@@ -330,9 +330,9 @@ namespace DOCCB.Application.Features.Courses.Application.Constants;
 
 public static class CourseIndexNames
 {
-    public const string NameModality = "ux_curso_nombre_modalidad";
-    public const string ExternalId = "ux_curso_id_externo";
-    public const string CourseUser = "ux_curso_asignacion_usuario_curso_usuario";
+    public const string NameModality = "ux_course_name_modality";
+    public const string ExternalId = "ux_course_external_id";
+    public const string CourseUser = "ux_course_assignment_user_course_user";
 
     public static readonly string[] All = [NameModality, ExternalId, CourseUser];
 }
@@ -353,49 +353,49 @@ public class CourseConfiguration : IEntityTypeConfiguration<Course>
 {
     public void Configure(EntityTypeBuilder<Course> builder)
     {
-        builder.ToTable("curso", "dbo", table =>
+        builder.ToTable("course", "dbo", table =>
         {
-            table.HasCheckConstraint("ck_curso_nombre", "LEN(LTRIM(nombre)) > 0");
-            table.HasCheckConstraint("ck_curso_modalidad", "modalidad IN ('VIRTUAL', 'PRESENCIAL')");
-            table.HasCheckConstraint("ck_curso_id_externo",
-                "id_externo IS NULL OR (LEN(id_externo) > 0 AND CHARINDEX(' ', id_externo) = 0)");
+            table.HasCheckConstraint("ck_course_name", "LEN(LTRIM(name)) > 0");
+            table.HasCheckConstraint("ck_course_modality", "modality IN ('VIRTUAL', 'PRESENCIAL')");
+            table.HasCheckConstraint("ck_course_external_id",
+                "external_id IS NULL OR (LEN(external_id) > 0 AND CHARINDEX(' ', external_id) = 0)");
         });
 
-        builder.HasKey(c => c.Id).HasName("pk_curso");
+        builder.HasKey(c => c.Id).HasName("pk_course");
 
         builder.Property(c => c.Id).HasColumnName("id");
-        builder.Property(c => c.Name).HasColumnName("nombre").HasMaxLength(150).IsRequired();
+        builder.Property(c => c.Name).HasColumnName("name").HasMaxLength(150).IsRequired();
 
         // En la BD se guarda "VIRTUAL" / "PRESENCIAL"; en C# es un enum.
         builder.Property(c => c.Modality)
-            .HasColumnName("modalidad")
+            .HasColumnName("modality")
             .HasMaxLength(20)
             .IsUnicode(false)
             .HasConversion(
                 modality => modality.ToString().ToUpperInvariant(),
                 code => Enum.Parse<CourseModality>(code, true));
 
-        builder.Property(c => c.ExternalId).HasColumnName("id_externo").HasMaxLength(50).IsUnicode(false);
-        builder.Property(c => c.Removed).HasColumnName("eliminado");
-        builder.Property(c => c.CreatedDate).HasColumnName("fecha_creacion").HasColumnType("datetime2(0)");
-        builder.Property(c => c.CreatedBy).HasColumnName("creado_por").HasMaxLength(150).IsRequired();
-        builder.Property(c => c.UpdatedDate).HasColumnName("fecha_actualizacion").HasColumnType("datetime2(0)");
-        builder.Property(c => c.UpdatedBy).HasColumnName("actualizado_por").HasMaxLength(150);
+        builder.Property(c => c.ExternalId).HasColumnName("external_id").HasMaxLength(50).IsUnicode(false);
+        builder.Property(c => c.Removed).HasColumnName("removed");
+        builder.Property(c => c.CreatedDate).HasColumnName("created_date").HasColumnType("datetime2(0)");
+        builder.Property(c => c.CreatedBy).HasColumnName("created_by").HasMaxLength(150).IsRequired();
+        builder.Property(c => c.UpdatedDate).HasColumnName("updated_date").HasColumnType("datetime2(0)");
+        builder.Property(c => c.UpdatedBy).HasColumnName("updated_by").HasMaxLength(150);
 
         builder.HasIndex(c => new { c.Name, c.Modality })
             .IsUnique()
-            .HasFilter("[eliminado] = 0")
+            .HasFilter("[removed] = 0")
             .HasDatabaseName(CourseIndexNames.NameModality);
 
         builder.HasIndex(c => c.ExternalId)
             .IsUnique()
-            .HasFilter("[id_externo] IS NOT NULL")
+            .HasFilter("[external_id] IS NOT NULL")
             .HasDatabaseName(CourseIndexNames.ExternalId);
 
         builder.HasMany(c => c.Assignments)
             .WithOne(a => a.Course)
             .HasForeignKey(a => a.CourseId)
-            .HasConstraintName("fk_curso_asignacion_curso")
+            .HasConstraintName("fk_course_assignment_course")
             .OnDelete(DeleteBehavior.Restrict);
     }
 }
@@ -414,20 +414,20 @@ public class CourseAssignmentConfiguration : IEntityTypeConfiguration<CourseAssi
 {
     public void Configure(EntityTypeBuilder<CourseAssignment> builder)
     {
-        builder.ToTable("curso_asignacion", "dbo");
+        builder.ToTable("course_assignment", "dbo");
 
-        builder.HasKey(a => a.Id).HasName("pk_curso_asignacion");
+        builder.HasKey(a => a.Id).HasName("pk_course_assignment");
 
-        // Llave alterna (id, id_curso): destino de la FK compuesta de los usuarios.
-        builder.HasAlternateKey(a => new { a.Id, a.CourseId }).HasName("uq_curso_asignacion_id_curso");
+        // Llave alterna (id, course_id): destino de la FK compuesta de los usuarios.
+        builder.HasAlternateKey(a => new { a.Id, a.CourseId }).HasName("uq_course_assignment_id_course_id");
 
         builder.Property(a => a.Id).HasColumnName("id");
-        builder.Property(a => a.CourseId).HasColumnName("id_curso");
-        builder.Property(a => a.DueDate).HasColumnName("fecha_limite").HasColumnType("date");
-        builder.Property(a => a.CreatedDate).HasColumnName("fecha_creacion").HasColumnType("datetime2(0)");
-        builder.Property(a => a.CreatedBy).HasColumnName("creado_por").HasMaxLength(150).IsRequired();
+        builder.Property(a => a.CourseId).HasColumnName("course_id");
+        builder.Property(a => a.DueDate).HasColumnName("due_date").HasColumnType("date");
+        builder.Property(a => a.CreatedDate).HasColumnName("created_date").HasColumnType("datetime2(0)");
+        builder.Property(a => a.CreatedBy).HasColumnName("created_by").HasMaxLength(150).IsRequired();
 
-        builder.HasIndex(a => a.CourseId).HasDatabaseName("ix_curso_asignacion_id_curso");
+        builder.HasIndex(a => a.CourseId).HasDatabaseName("ix_course_assignment_course_id");
     }
 }
 ```
@@ -446,14 +446,14 @@ public class CourseAssignmentUserConfiguration : IEntityTypeConfiguration<Course
 {
     public void Configure(EntityTypeBuilder<CourseAssignmentUser> builder)
     {
-        builder.ToTable("curso_asignacion_usuario", "dbo");
+        builder.ToTable("course_assignment_user", "dbo");
 
-        builder.HasKey(u => new { u.AssignmentId, u.UserId }).HasName("pk_curso_asignacion_usuario");
+        builder.HasKey(u => new { u.AssignmentId, u.UserId }).HasName("pk_course_assignment_user");
 
-        builder.Property(u => u.AssignmentId).HasColumnName("id_asignacion");
-        builder.Property(u => u.CourseId).HasColumnName("id_curso");
-        builder.Property(u => u.UserId).HasColumnName("id_usuario");
-        builder.Property(u => u.CreatedDate).HasColumnName("fecha_creacion").HasColumnType("datetime2(0)");
+        builder.Property(u => u.AssignmentId).HasColumnName("assignment_id");
+        builder.Property(u => u.CourseId).HasColumnName("course_id");
+        builder.Property(u => u.UserId).HasColumnName("user_id");
+        builder.Property(u => u.CreatedDate).HasColumnName("created_date").HasColumnType("datetime2(0)");
 
         // Regla "un usuario, un grupo por curso". Tiene que estar en el modelo, no solo en el script:
         // con él, EF ejecuta el DELETE antes del INSERT cuando alguien se mueve de un grupo a otro.
@@ -461,19 +461,19 @@ public class CourseAssignmentUserConfiguration : IEntityTypeConfiguration<Course
             .IsUnique()
             .HasDatabaseName(CourseIndexNames.CourseUser);
 
-        builder.HasIndex(u => u.UserId).HasDatabaseName("ix_curso_asignacion_usuario_id_usuario");
+        builder.HasIndex(u => u.UserId).HasDatabaseName("ix_course_assignment_user_user_id");
 
         builder.HasOne(u => u.Assignment)
             .WithMany(a => a.Users)
             .HasForeignKey(u => new { u.AssignmentId, u.CourseId })
             .HasPrincipalKey(a => new { a.Id, a.CourseId })
-            .HasConstraintName("fk_curso_asignacion_usuario_asignacion")
+            .HasConstraintName("fk_course_assignment_user_assignment")
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne(u => u.User)
             .WithMany()
             .HasForeignKey(u => u.UserId)
-            .HasConstraintName("fk_curso_asignacion_usuario_usuario")
+            .HasConstraintName("fk_course_assignment_user_user")
             .OnDelete(DeleteBehavior.Restrict);
     }
 }
@@ -1635,7 +1635,7 @@ services.AddScoped<IUserSearchRepository, UserSearchRepository>();
 
 ### Si algún día hace falta Microsoft Graph
 
-Si hay personas que deben recibir cursos y no están en `dbo.[User]`, cambia solo `UserSearchRepository` por una implementación con Graph (la consulta está en la guía de Angular, sección 7). La tabla `curso_asignacion_usuario` tendría que guardar el `object id` de Entra ID en lugar de `id_usuario`, así que decídelo **antes** de ejecutar el script.
+Si hay personas que deben recibir cursos y no están en `dbo.[User]`, cambia solo `UserSearchRepository` por una implementación con Graph (la consulta está en la guía de Angular, sección 7). La tabla `course_assignment_user` tendría que guardar el `object id` de Entra ID en lugar de `user_id`, así que decídelo **antes** de ejecutar el script.
 
 ---
 
@@ -1714,17 +1714,17 @@ public class CourseValidationHelperTests
 - Editar un grupo vencido sin cambiar su fecha → se guarda.
 - Editar un grupo vencido cambiando su fecha a otra pasada → `400`.
 - `NameExistsAsync` devuelve `true` → `409` con `DuplicateName`.
-- `SaveChangesAsync` lanza `DuplicateKeyException("ux_curso_id_externo")` → `409` con `DuplicateExternalId`.
+- `SaveChangesAsync` lanza `DuplicateKeyException("ux_course_external_id")` → `409` con `DuplicateExternalId`.
 - Eliminar un curso con grupos → queda con `Removed = true` y no se llama a `Remove`.
 - Con un `TimeProvider` falso a las 11 p. m. de Colombia (04:00 UTC del día siguiente), una fecha de "hoy" en Colombia se acepta.
 
 ### Contra SQL Server
 
 - Ejecuta el script dos veces: la segunda no debe fallar ni duplicar nada.
-- Inserta dos cursos con el mismo nombre y modalidad → error `2601` en `ux_curso_nombre_modalidad`.
+- Inserta dos cursos con el mismo nombre y modalidad → error `2601` en `ux_course_name_modality`.
 - Mismo nombre en modalidades distintas → se permite.
 - Elimina lógicamente un curso y crea otro con su nombre → se permite.
-- Intenta insertar en `curso_asignacion_usuario` un `id_curso` distinto al del grupo → la FK compuesta lo rechaza.
+- Intenta insertar en `course_assignment_user` un `course_id` distinto al del grupo → la FK compuesta lo rechaza.
 - Mueve un usuario del grupo 1 al grupo 2 del mismo curso con un `PUT` → se guarda sin violar el índice único.
 
 ---
@@ -1733,10 +1733,10 @@ public class CourseValidationHelperTests
 
 | Síntoma | Causa | Solución |
 |---|---|---|
-| `Invalid object name 'dbo.Course'` | Falta `ToTable("curso", "dbo")` o la configuración no se registró | Revisa las tres líneas de `ApplyConfiguration` en `DOCCbDbContext`. |
+| `Invalid object name 'dbo.Course'` | Falta `ToTable("course", "dbo")` o la configuración no se registró | Revisa las tres líneas de `ApplyConfiguration` en `DOCCbDbContext`. |
 | `Invalid column name 'Name'` | Una propiedad sin `HasColumnName` | Cada propiedad debe mapear su columna en `snake_case`. |
 | `INSERT failed because the following SET options have incorrect settings: 'QUOTED_IDENTIFIER'` | Inserción manual en una sesión con `QUOTED_IDENTIFIER OFF` sobre una tabla con índices filtrados | Ejecuta los scripts con `SET QUOTED_IDENTIFIER ON`. EF Core ya lo usa. |
-| Mover a alguien de grupo da error `2601` | El índice único `(id_curso, id_usuario)` no está en la configuración de EF | Déjalo en `CourseAssignmentUserConfiguration`: EF lo necesita para ordenar el DELETE antes del INSERT. |
+| Mover a alguien de grupo da error `2601` | El índice único `(course_id, user_id)` no está en la configuración de EF | Déjalo en `CourseAssignmentUserConfiguration`: EF lo necesita para ordenar el DELETE antes del INSERT. |
 | Fechas de hoy rechazadas en la noche | "Hoy" calculado con la hora del servidor en UTC | Usa `BusinessDate.Today`, nunca `DateTime.Today`. |
 | `TimeZoneNotFoundException` | Servidor Windows sin ICU | Cambia `BusinessTimeZoneId` a `SA Pacific Standard Time`. |
 | La modalidad llega como `1` en el JSON | Se serializó el enum en lugar del código | Usa `CourseModalityCodes.ToCode` en los DTOs, como el repositorio. |

@@ -815,7 +815,7 @@ export const COURSES_INFRASTRUCTURE_PROVIDERS: Provider[] = [
 
 ### Contrato que debe cumplir el backend
 
-> **Implementación del backend:** ver [cursos-api-sqlserver.md](cursos-api-sqlserver.md), con el script de SQL Server (`dbo.curso`, `dbo.curso_asignacion`, `dbo.curso_asignacion_usuario`) y la API en DOCCB. Allí los usuarios se toman de la tabla de usuarios de DOCCB y no de Microsoft Graph: `userId` es el `Id` de `dbo.[User]` enviado como texto. El frontend no cambia.
+> **Implementación del backend:** ver [cursos-api-sqlserver.md](cursos-api-sqlserver.md), con el script de SQL Server (`dbo.course`, `dbo.course_assignment`, `dbo.course_assignment_user`) y la API en DOCCB. Allí los usuarios se toman de la tabla de usuarios de DOCCB y no de Microsoft Graph: `userId` es el `Id` de `dbo.[User]` enviado como texto. El frontend no cambia.
 
 | Método | Ruta | Cuerpo / respuesta |
 |---|---|---|
