@@ -815,6 +815,8 @@ export const COURSES_INFRASTRUCTURE_PROVIDERS: Provider[] = [
 
 ### Contrato que debe cumplir el backend
 
+> **Implementación del backend:** ver [cursos-api-sqlserver.md](cursos-api-sqlserver.md), con el script de SQL Server (`dbo.curso`, `dbo.curso_asignacion`, `dbo.curso_asignacion_usuario`) y la API en DOCCB. Allí los usuarios se toman de la tabla de usuarios de DOCCB y no de Microsoft Graph: `userId` es el `Id` de `dbo.[User]` enviado como texto. El frontend no cambia.
+
 | Método | Ruta | Cuerpo / respuesta |
 |---|---|---|
 | `GET` | `/api/courses?search=excel&modality=VIRTUAL&pendingExternalId=true&page=1&pageSize=12` | `{ items, totalCount, stats }`. `search` busca en nombre **y** en ID externo. `stats` se calcula **sin** los filtros de modalidad y pendiente (solo con `search`), para que los indicadores no se vuelvan cero al filtrar. |
