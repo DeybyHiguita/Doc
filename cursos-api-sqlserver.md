@@ -13,7 +13,7 @@ Guía paso a paso para construir el backend del módulo de **Cursos** en DOCCB, 
 | # | Tema | Decisión |
 |---|---|---|
 | 1 | **Convención de nombres.** La base de datos usa inglés y `snake_case` (`dbo.course`, `due_date`); las entidades C# usan inglés y PascalCase, como el resto de DOCCB. | La configuración de EF Core traduce cada propiedad a su columna con `ToTable` y `HasColumnName`. El código no cambia de estilo y la base de datos respeta su convención. |
-| 2 | **De dónde salen los usuarios.** La guía de Angular proponía Microsoft Graph, pero DOCCB ya tiene su tabla de usuarios (`dbo.[User]`) con carga masiva. | Se asigna contra `dbo.[User]` con una llave foránea real: sin permisos de Graph y sin copias de nombres que se desactualizan. Si hay empleados que no están en esa tabla, vuelve a Graph (sección 12). |
+| 2 | **De dónde salen los usuarios.** La guía de Angular proponía Microsoft Graph, pero DOCCB ya tiene su tabla de usuarios (`dbo.users`) con carga masiva. | Se asigna contra `dbo.users` con una llave foránea real: sin permisos de Graph y sin copias de nombres que se desactualizan. Si hay empleados que no están en esa tabla, vuelve a Graph (sección 12). |
 | 3 | **"Hoy" depende del servidor.** Si el servidor corre en UTC, entre las 7 p. m. y la medianoche de Colombia ya es "mañana" y una fecha de hoy se rechaza como pasada. | "Hoy" se calcula siempre en la zona `America/Bogota`. |
 | 4 | **Duplicados por carrera.** Validar en el servicio no basta: dos personas pueden guardar el mismo nombre al mismo tiempo. | Índices únicos filtrados en la base de datos. El servicio valida primero para dar un buen mensaje, y si aun así el índice rechaza, responde `409` con el mismo mensaje. |
 | 5 | **Eliminar un curso con usuarios** borra el historial de quién debía tomarlo. | Si tiene grupos asignados, borrado lógico (`removed = 1`, igual que `Removed` en `Request`). Si no tiene, borrado físico. |
@@ -84,7 +84,7 @@ WebApp/Controllers/
 ### Modelo
 
 ```text
-dbo.[User] (existente)
+dbo.users (existente)
      ▲
      │ user_id
      │
@@ -198,7 +198,7 @@ BEGIN
             ON DELETE CASCADE,
         CONSTRAINT fk_course_assignment_user_user
             FOREIGN KEY (user_id)
-            REFERENCES dbo.[User] ([Id])
+            REFERENCES dbo.users (id)
     );
 
     -- Un usuario solo puede estar en un grupo por curso.
@@ -212,7 +212,7 @@ END;
 GO
 ```
 
-> ⚠️ Confirma el nombre real de la tabla de usuarios y de su llave (`dbo.[User]`, `[Id]`) antes de ejecutar. Si la base de datos no se llama `DB`, cambia el `USE`.
+> ⚠️ Confirma el nombre real de la tabla de usuarios y de su llave (`dbo.users`, `id`) antes de ejecutar. Si la base de datos no se llama `DB`, cambia el `USE`.
 
 ### Consultas de verificación
 
@@ -566,7 +566,7 @@ namespace DOCCB.Application.Features.Courses.Application.DTOs;
 
 public class CourseUserDto
 {
-    /// <summary>Id de dbo.[User] como texto: el frontend lo trata como identificador opaco.</summary>
+    /// <summary>Id de dbo.users como texto: el frontend lo trata como identificador opaco.</summary>
     public string UserId { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
     public string? Email { get; set; }
@@ -1635,7 +1635,7 @@ services.AddScoped<IUserSearchRepository, UserSearchRepository>();
 
 ### Si algún día hace falta Microsoft Graph
 
-Si hay personas que deben recibir cursos y no están en `dbo.[User]`, cambia solo `UserSearchRepository` por una implementación con Graph (la consulta está en la guía de Angular, sección 7). La tabla `course_assignment_user` tendría que guardar el `object id` de Entra ID en lugar de `user_id`, así que decídelo **antes** de ejecutar el script.
+Si hay personas que deben recibir cursos y no están en `dbo.users`, cambia solo `UserSearchRepository` por una implementación con Graph (la consulta está en la guía de Angular, sección 7). La tabla `course_assignment_user` tendría que guardar el `object id` de Entra ID en lugar de `user_id`, así que decídelo **antes** de ejecutar el script.
 
 ---
 
@@ -1746,8 +1746,8 @@ public class CourseValidationHelperTests
 
 ## ✅ Checklist
 
-- [ ] Confirmados el nombre de la base de datos y la tabla/llave de usuarios (`dbo.[User]`, `[Id]`).
-- [ ] Decidido: usuarios de `dbo.[User]` (esta guía) o de Entra ID vía Graph (antes de ejecutar el script).
+- [ ] Confirmados el nombre de la base de datos y la tabla/llave de usuarios (`dbo.users`, `id`).
+- [ ] Decidido: usuarios de `dbo.users` (esta guía) o de Entra ID vía Graph (antes de ejecutar el script).
 - [ ] `Cursos.sql` en `Persistence/Scripts SQL` y ejecutado en cada ambiente.
 - [ ] Entidades, enum y configuraciones creadas; configuraciones registradas en `DOCCbDbContext`.
 - [ ] Nombres de índices iguales en el script, en la configuración y en `CourseIndexNames`.
