@@ -20,7 +20,7 @@ Cada persona muestra de dónde viene: **Maestro** (está en `dbo.users`, relacio
 | # | Hueco o riesgo | Decisión |
 |---|---|---|
 | 1 | **¿El grupo cambia solo si el líder cambia de equipo?** | No. Se guarda una **foto** del momento. La pantalla lo dice claramente y el backend guarda qué líderes se usaron, para poder agregar después un botón "Actualizar equipos". |
-| 2 | **Personas "solo directorio".** Existen en Microsoft pero no en `dbo.users`. Cualquier proceso que dependa del maestro (por ejemplo, **cursos**, que asigna contra `dbo.users`) no podrá usarlas. | Se aceptan, pero se marcan con un distintivo y el resumen avisa cuántas son. Antes de usar grupos en cursos, decidan si esas personas se cargan en el maestro o se excluyen. |
+| 2 | **Personas "solo directorio".** Existen en Microsoft pero no en `dbo.users`. Los procesos que dependen del maestro no las ven. | Se aceptan, pero se marcan con un distintivo y el resumen avisa cuántas son. **Cursos sí las usa:** asigna por correo e identificador de Microsoft, así que pueden recibir y finalizar cursos (ver [cursos-grupos-finalizacion-api-sqlserver.md](cursos-grupos-finalizacion-api-sqlserver.md)). Para otros procesos, decidan si se cargan en el maestro. |
 | 3 | **"Todos los niveles" puede traer media empresa.** | Casilla apagada por defecto, tope de 2.000 personas por líder, y todo pasa por una vista previa con casillas antes de agregarse. |
 | 4 | **La misma persona llega por dos caminos** (en el equipo de un líder y en la lista pegada). | La llave es el correo. Se queda con el **primer** origen y se informa "N ya estaban en el grupo". |
 | 5 | **Quitar un líder.** ¿Qué pasa con su equipo? | Se quitan las personas que llegaron **solo** por ese líder, previa confirmación que dice cuántas son. Las que se agregaron también de otra forma se quedan. |
@@ -1301,7 +1301,7 @@ export class ManagerImportComponent {
 
     <button
       type="button"
-      class="btn btn-primary ms-auto"
+      class="btn btn-accent ms-auto"
       [disabled]="!detected().length || tooMany() || loading()"
       (click)="search()">
       @if (loading()) {
@@ -1432,6 +1432,24 @@ export class ManagerImportComponent {
   align-items: flex-start;
   gap: 0.75rem 1.5rem;
   margin-top: 1rem;
+
+  // Interruptores con contraste: apagados, el riel de Bootstrap casi no se ve sobre fondo blanco
+  // y queda solo el punto gris.
+  .form-switch .form-check-input {
+    width: 2.25em;
+    height: 1.25em;
+    border-color: var(--ug-muted);
+    cursor: pointer;
+
+    &:checked {
+      border-color: var(--ug-accent);
+      background-color: var(--ug-accent);
+    }
+
+    &:focus-visible {
+      box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--ug-accent) 30%, transparent);
+    }
+  }
 }
 
 .mi__teams {
@@ -2844,7 +2862,7 @@ export class UserGroupBuilderPageComponent implements HasUnsavedChanges {
               <div class="alert alert-warning small py-2">
                 <strong>{{ facade.summary().directoryOnly }}</strong>
                 {{ facade.summary().directoryOnly === 1 ? 'persona no está' : 'personas no están' }} en el maestro de usuarios.
-                Los procesos que usan el maestro (como cursos) no las verán hasta que se carguen allí.
+                Cursos sí las incluye; otros procesos que usan el maestro no las verán hasta que se carguen allí.
               </div>
             }
 
@@ -3302,7 +3320,7 @@ export class UserGroupsListPageComponent {
               <thead>
                 <tr>
                   <th scope="col">Nombre</th>
-                  <th scope="col">Integrantes</th>
+                  <th scope="col" class="text-center">Integrantes</th>
                   <th scope="col" class="text-center">Líderes</th>
                   <th scope="col">Actualizado</th>
                   <th scope="col" class="text-center">Acciones</th>
@@ -3317,7 +3335,7 @@ export class UserGroupsListPageComponent {
                         <small class="ugl__description">{{ group.description }}</small>
                       }
                     </td>
-                    <td data-label="Integrantes">
+                    <td data-label="Integrantes" class="text-center">
                       {{ group.membersCount }}
                       @if (group.directoryOnlyCount) {
                         <span class="ugl__warn" title="Personas que no están en el maestro de usuarios">
@@ -3423,6 +3441,9 @@ export class UserGroupsListPageComponent {
 
 .ugl__wrap {
   overflow-x: auto;
+  // overflow-x: auto convierte overflow-y en auto: la animación de entrada de las filas
+  // desborda un instante y aparece un scroll vertical aunque haya una sola fila.
+  overflow-y: hidden;
   border: 1px solid var(--ug-border);
   border-radius: var(--ug-radius-sm);
   transition: opacity 0.2s ease;
@@ -3715,6 +3736,6 @@ describe('UserGroupBuilderFacade', () => {
 - [ ] Tokens `--ug-*` conectados a tus variables de color.
 - [ ] Rutas con `permissionGuard`, `unsavedChangesGuard` y permiso `user-groups` creado.
 - [ ] Probado con líderes reales, listas reales y un grupo de más de 1.000 personas.
-- [ ] Decidido qué pasa con las personas "solo directorio" antes de usar grupos en otros procesos.
+- [ ] Decidido qué pasa con las personas "solo directorio" en procesos distintos a cursos (cursos ya las acepta).
 - [ ] Probado con teclado (pestañas con flechas, casillas, búsqueda), lector de pantalla, móvil y `prefers-reduced-motion`.
 - [ ] Componentes con `OnPush`, `input()`, `output()` y signals; sin `ngClass` ni `ngStyle`.

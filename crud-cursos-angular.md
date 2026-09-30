@@ -15,6 +15,8 @@ La página es un catálogo de tarjetas animadas con filtros rápidos y un panel 
 
 > **Listado en tabla:** para la pantalla con el diseño de Módulo de Certificados (tabla, filtros y filtros compartibles por URL), ver [listado-cursos-angular.md](listado-cursos-angular.md). Esa página reemplaza a `courses-page` y reutiliza el panel de edición de esta guía.
 
+> ⚠️ **Actualizado por [cursos-grupos-finalizacion-angular.md](cursos-grupos-finalizacion-angular.md).** La sección 2 del panel ya no elige personas una por una: elige **grupos de usuarios** creados en [grupos-usuarios-angular.md](grupos-usuarios-angular.md). El buscador de usuarios (paso 7), `AssignedUser`, `UsersDirectoryRepository` y los validadores de usuarios se reemplazan por el `group-picker` y los cambios de la guía nueva.
+
 ---
 
 ## 1. 🧐 Revisión crítica del requerimiento
@@ -1265,6 +1267,8 @@ export function isDialogOpen(): boolean {
 ---
 
 ## 10. Paso 7 — El buscador de usuarios
+
+> ⚠️ **Reemplazado.** Los cursos ahora se asignan por grupo: usa el `group-picker` de [cursos-grupos-finalizacion-angular.md](cursos-grupos-finalizacion-angular.md). Este paso queda como referencia de un `ControlValueAccessor` con búsqueda.
 
 Un `ControlValueAccessor`: el formulario lo usa como cualquier control (`formControlName="users"`) y recibe un `AssignedUser[]`.
 
