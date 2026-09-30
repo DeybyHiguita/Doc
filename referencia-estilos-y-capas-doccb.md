@@ -145,4 +145,33 @@ Todo sale de los tokens de cada feature (`--cu-*` en cursos, `--ug-*` en grupos)
 | 2 | Nuevo grupo → "Todos los niveles" / "Incluir a los líderes" | Los interruptores se ven como un punto gris. El riel apagado casi no tiene contraste con el fondo. | Dale borde visible al interruptor y el acento cuando está activo (estilo en la guía de grupos). |
 | 3 | Listado de grupos | Aparece una **barra de scroll vertical** dentro de la tabla con una sola fila. `overflow-x: auto` convierte `overflow-y` en `auto`, y la animación de entrada de las filas (`translateY`) desborda por un instante. | `overflow-y: hidden` en el contenedor de la tabla. |
 | 4 | Listado de grupos | "Integrantes" alineado a la izquierda y "Líderes" centrado. El encabezado "Acciones" está centrado pero los íconos no. | Números y acciones centrados, encabezado y celda con la misma alineación. |
-| 5 | Tarjeta de curso | El pie dice "0 usuarios". Con la asignación por grupos ese dato queda corto. | "N grupos · N personas" más el avance de finalización y la acción **Seguimiento** ([cursos-grupos-finalizacion-angular.md](cursos-grupos-finalizacion-angular.md)). |
+| 5 | Tarjeta de curso | El pie dice "0 usuarios". Con la asignación por grupos ese dato queda corto. | "N asignaciones · N personas" más el avance de finalización y la acción **Grupos asignados** ([cursos-grupos-finalizacion-angular.md](cursos-grupos-finalizacion-angular.md)). |
+
+---
+
+## 3. 🗄️ Esquema real de cursos y grupos
+
+Base de datos `DB`, esquema `dbo`, nombres en inglés y `snake_case`.
+
+| Tabla | Columnas |
+|---|---|
+| `course` | `id`, `name`, `modality`, `external_id`, `removed`, `created_date`, `created_by`, `updated_date`, `updated_by` |
+| `course_assignment` | `id`, `course_id`, `user_group_id`, `due_date`, `created_date`, `created_by`, `updated_date`, `updated_by` |
+| `course_assignment_user` | `id`, `assignment_id`, `user_id`, `created_date` |
+| `user_group` | `id`, `name`, `description`, `created_date`, `created_by` (+ `removed`, `updated_*` de la guía de grupos) |
+| `user_group_manager` | `id`, `email`, `display_name`, `entra_object_id`, `include_all_levels`, `created_date` (+ `group_id`) |
+| `user_group_member` | `group_id`, `email`, `display_name`, `job_title`, `user_id`, `entra_object_id`, `added_via`, `manager_email` |
+
+Nuevas, de [cursos-grupos-finalizacion-api-sqlserver.md](cursos-grupos-finalizacion-api-sqlserver.md):
+
+| Tabla | Columnas |
+|---|---|
+| `course_assignment_completion` | `id`, `assignment_user_id` (único), `management_name`, `created_date` |
+| `course_rating` | `id` (GUID), `course_id`, `assignment_id`, `satisfaction`, `usefulness`, `created_date` (DATE) |
+
+### Reglas del negocio
+
+- Una **asignación** es un grupo + una fecha de finalización. El mismo grupo puede asignarse varias veces al mismo curso con fechas distintas.
+- `course_assignment_user` relaciona a cada integrante **con usuario en DOCCB** (`user_id`) con cada asignación. Los integrantes "solo directorio" no se asignan.
+- Cada persona diligencia **un formulario por asignación** (`course_assignment_completion`). Sin formulario = Pendiente.
+- Las calificaciones van a `course_rating`, sin relación con la persona.

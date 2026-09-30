@@ -20,7 +20,7 @@ Cada persona muestra de dónde viene: **Maestro** (está en `dbo.users`, relacio
 | # | Hueco o riesgo | Decisión |
 |---|---|---|
 | 1 | **¿El grupo cambia solo si el líder cambia de equipo?** | No. Se guarda una **foto** del momento. La pantalla lo dice claramente y el backend guarda qué líderes se usaron, para poder agregar después un botón "Actualizar equipos". |
-| 2 | **Personas "solo directorio".** Existen en Microsoft pero no en `dbo.users`. Los procesos que dependen del maestro no las ven. | Se aceptan, pero se marcan con un distintivo y el resumen avisa cuántas son. **Cursos sí las usa:** asigna por correo e identificador de Microsoft, así que pueden recibir y finalizar cursos (ver [cursos-grupos-finalizacion-api-sqlserver.md](cursos-grupos-finalizacion-api-sqlserver.md)). Para otros procesos, decidan si se cargan en el maestro. |
+| 2 | **Personas "solo directorio".** Existen en Microsoft pero no en `dbo.users`. Los procesos que dependen del maestro no las ven. | Se aceptan, pero se marcan con un distintivo y el resumen avisa cuántas son. **Cursos no las asigna:** `course_assignment_user` se relaciona con `dbo.users`, así que solo reciben el curso quienes tienen usuario; el editor de cursos avisa cuántas quedan fuera ([cursos-grupos-finalizacion-api-sqlserver.md](cursos-grupos-finalizacion-api-sqlserver.md)). Para que las reciban, hay que cargarlas en el maestro. |
 | 3 | **"Todos los niveles" puede traer media empresa.** | Casilla apagada por defecto, tope de 2.000 personas por líder, y todo pasa por una vista previa con casillas antes de agregarse. |
 | 4 | **La misma persona llega por dos caminos** (en el equipo de un líder y en la lista pegada). | La llave es el correo. Se queda con el **primer** origen y se informa "N ya estaban en el grupo". |
 | 5 | **Quitar un líder.** ¿Qué pasa con su equipo? | Se quitan las personas que llegaron **solo** por ese líder, previa confirmación que dice cuántas son. Las que se agregaron también de otra forma se quedan. |
@@ -2862,7 +2862,7 @@ export class UserGroupBuilderPageComponent implements HasUnsavedChanges {
               <div class="alert alert-warning small py-2">
                 <strong>{{ facade.summary().directoryOnly }}</strong>
                 {{ facade.summary().directoryOnly === 1 ? 'persona no está' : 'personas no están' }} en el maestro de usuarios.
-                Cursos sí las incluye; otros procesos que usan el maestro no las verán hasta que se carguen allí.
+                Cursos y los demás procesos que usan el maestro no las incluirán hasta que se carguen allí.
               </div>
             }
 
@@ -3736,6 +3736,6 @@ describe('UserGroupBuilderFacade', () => {
 - [ ] Tokens `--ug-*` conectados a tus variables de color.
 - [ ] Rutas con `permissionGuard`, `unsavedChangesGuard` y permiso `user-groups` creado.
 - [ ] Probado con líderes reales, listas reales y un grupo de más de 1.000 personas.
-- [ ] Decidido qué pasa con las personas "solo directorio" en procesos distintos a cursos (cursos ya las acepta).
+- [ ] Decidido qué pasa con las personas "solo directorio": cursos no las asigna hasta que estén en el maestro.
 - [ ] Probado con teclado (pestañas con flechas, casillas, búsqueda), lector de pantalla, móvil y `prefers-reduced-motion`.
 - [ ] Componentes con `OnPush`, `input()`, `output()` y signals; sin `ngClass` ni `ngStyle`.

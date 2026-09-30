@@ -6,7 +6,7 @@ Guía paso a paso para construir el backend del módulo de **Cursos** en DOCCB, 
 - **Base de datos:** `DB` · esquema `dbo` · tablas y atributos en inglés y `snake_case` (`dbo.table_name`, `column_name`)
 - **Proyectos:** `WebApp` · `DOCCB.Application` · `DOCCB.Domain` · `DOCCB.Infraestructure`
 
-> ⚠️ **Actualizado por [cursos-grupos-finalizacion-api-sqlserver.md](cursos-grupos-finalizacion-api-sqlserver.md).** Ahora un curso se asigna a **grupos de usuarios** (cada uno con su fecha límite) y cada persona tiene estado y formulario de finalización. De esta guía siguen vigentes `dbo.course`, la entidad `Course`, el ID externo, el listado y `BusinessDate`. Las tablas `dbo.course_assignment` y `dbo.course_assignment_user`, sus DTOs y la parte de asignaciones de `CourseService` y `CourseRepository` se reemplazan por las de la guía nueva.
+> ⚠️ **Actualizado por [cursos-grupos-finalizacion-api-sqlserver.md](cursos-grupos-finalizacion-api-sqlserver.md).** Ahora un curso se asigna a **grupos de usuarios** (cada uno con su fecha límite) y cada persona tiene estado y formulario de finalización. De esta guía siguen vigentes `dbo.course`, la entidad `Course`, el ID externo, el listado y `BusinessDate`. `dbo.course_assignment` (ahora con `user_group_id`) y `dbo.course_assignment_user` se conservan con los ajustes de índices de la guía nueva; sus DTOs y la parte de asignaciones de `CourseService` y `CourseRepository` se reemplazan por los de esa guía.
 
 ---
 

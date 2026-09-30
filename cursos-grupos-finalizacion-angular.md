@@ -4,10 +4,16 @@ Guía de las pantallas del nuevo flujo:
 
 | Pantalla | Para quién | Qué hace |
 |---|---|---|
-| **Editor de curso** ✏️ | Administrador | Asigna **grupos de usuarios** al curso, cada uno con su fecha límite. Reemplaza a la asignación persona por persona. |
-| **Mis cursos** | Cada colaborador | Lista sus cursos pendientes y finalizados. |
-| **Formulario de finalización** | Cada colaborador | Curso, sus datos, su **gerencia** (bloqueada, traída de la API) y dos calificaciones **anónimas** con estrellas. Al enviarlo, el curso queda **Finalizado**. |
-| **Seguimiento** | Administrador | Avance por grupo, personas con su estado y gerencia, y promedios anónimos de las calificaciones. |
+| **Editor de curso** ✏️ | Administrador | Asigna **grupos** al curso. Cada asignación es un grupo + una fecha de finalización, y el mismo grupo puede repetirse con otra fecha. |
+| **Grupos asignados** | Administrador | Desde la tarjeta del curso: cada asignación (grupo + fecha) con su avance, sus integrantes con el estado del formulario y la gerencia, y los promedios anónimos. |
+| **Mis cursos** | Cada colaborador | Una tarjeta por asignación: si el mismo curso le llegó dos veces, ve dos tarjetas con su grupo y su fecha. |
+| **Formulario de finalización** | Cada colaborador | Uno por asignación. Curso, grupo, fecha, sus datos, su **gerencia** (bloqueada, traída de la API) y dos calificaciones **anónimas** con estrellas. Al enviarlo, esa asignación queda **Finalizada**. |
+
+**Reglas que vienen de la base de datos** ([referencia-estilos-y-capas-doccb.md](referencia-estilos-y-capas-doccb.md), sección 3):
+
+- `course_assignment` = grupo (`user_group_id`) + `due_date`. Grupo + fecha no se repiten en el mismo curso.
+- `course_assignment_user` relaciona a cada integrante **con usuario en DOCCB** con la asignación. Quien es "solo directorio" no recibe el curso.
+- Cada persona diligencia **un formulario por asignación**. Sin formulario = Pendiente.
 
 - **Stack:** Angular 20 · standalone · signals · OnPush · Reactive Forms tipados · Bootstrap 5.3 · Font Awesome · SweetAlert2 · SSR · MSAL
 - **Backend:** [cursos-grupos-finalizacion-api-sqlserver.md](cursos-grupos-finalizacion-api-sqlserver.md)
@@ -26,11 +32,13 @@ Guía de las pantallas del nuevo flujo:
 | 4 | **El envío no se puede deshacer.** | Confirmación antes de enviar: "No podrás cambiar tus respuestas". |
 | 5 | **Gerencia bloqueada.** El usuario podría pensar que está mal y no tiene cómo corregirla. | Campo de solo lectura con candado y el texto "Viene del directorio activo". Si no se pudo consultar, dice "No disponible" y deja enviar igual. |
 | 6 | **Vencido.** | Una etiqueta roja en "Mis cursos" y en el formulario. Se puede finalizar igual, fuera de plazo. |
-| 7 | **Un grupo guardado no cambia de grupo.** Cambiarlo borraría el historial de quienes ya finalizaron. | El grupo de una asignación guardada aparece bloqueado. Para cambiarlo, se quita la asignación y se agrega otra. |
-| 8 | **Quitar un grupo con finalizados.** | Confirmación que dice cuántos finalizaron y que se conserva su historial. |
-| 9 | **Personas en dos grupos del mismo curso.** | El editor avisa al guardar: "N personas estaban en dos grupos y quedaron en el primero". |
-| 10 | **Promedios con pocas respuestas delatan a alguien.** | El seguimiento solo muestra promedios con 3 respuestas o más, y lo explica. |
-| 11 | **"Actualizar desde el grupo" con cambios sin guardar.** | El botón se deshabilita hasta guardar, para no mezclar dos operaciones. |
+| 7 | **Una asignación guardada no cambia de grupo.** Sus personas y formularios son de ese grupo. | El grupo aparece bloqueado con candado. Para otro grupo, se agrega otra asignación. |
+| 8 | **Quitar una asignación con formularios diligenciados.** La API lo rechaza para no perder el historial. | El 🗑 se cambia por un candado: "N personas ya diligenciaron el formulario. Puedes cambiar la fecha". |
+| 9 | **El mismo grupo varias veces.** Es válido (cohortes). Con la misma fecha es un error. | Se permite elegir el mismo grupo otra vez; el formulario avisa si se repite grupo + fecha. Cada asignación muestra grupo y fecha para distinguirlas. |
+| 10 | **Integrantes sin usuario en DOCCB.** No reciben el curso. | El grupo elegido avisa "N sin usuario en DOCCB no recibirán el curso", y al guardar se informa cuántos quedaron fuera. |
+| 11 | **El mismo curso dos veces en "Mis cursos".** | Cada tarjeta muestra el grupo y la fecha, y cada una abre su propio formulario. |
+| 12 | **Promedios que delatan.** | Promedios del curso con 3 respuestas o más. Por asignación, solo si todas las asignaciones llegan a 3 (si no, restando se deducirían). La pantalla lo explica. |
+| 13 | **"Actualizar desde el grupo" con cambios sin guardar.** | El botón se deshabilita hasta guardar, para no mezclar dos operaciones. |
 
 ---
 
@@ -39,20 +47,20 @@ Guía de las pantallas del nuevo flujo:
 ### Editor de curso — sección 2 "Grupos asignados"
 
 ```text
-│ ② Grupos asignados                         ≈ 74 personas │
-│ Cada grupo tiene su propia fecha límite. Al guardar,      │
-│ cada integrante queda Pendiente.                          │
-│ ┌ Asignación 1 ───────────────────────────────────── 🗑 ┐ │
+│ ② Grupos asignados                          3 asignaciones │
+│ Cada asignación es un grupo con su fecha de finalización.  │
+│ El mismo grupo puede repetirse con otra fecha.             │
+│ ┌ Asignación 1 ───────────────────────────────────── 🔒 ┐ │ ← con formularios: no se quita
 │ │ Grupo de usuarios                                     │ │
 │ │ [👥 Operaciones Norte · 42 personas             🔒]   │ │ ← guardada: bloqueada
-│ │ Fecha límite  [2026-10-30]                            │ │
+│ │ Fecha de finalización  [2026-10-30]                   │ │
 │ │ ███████████░░░░░░░  18 de 42 finalizaron              │ │
 │ │                          ↻ Actualizar desde el grupo  │ │
 │ └───────────────────────────────────────────────────────┘ │
 │ ┌ Asignación 2 ───────────────────────────────────── 🗑 ┐ │
-│ │ Grupo de usuarios                                     │ │
-│ │ [🔍 Buscar grupo…                               ]      │ │ ← nueva: buscador
-│ │ Fecha límite  [__________]                            │ │
+│ │ [👥 Operaciones Norte · 42 personas             ✕]    │ │ ← el mismo grupo, otra fecha
+│ │ ⚠ 2 sin usuario en DOCCB no recibirán el curso        │ │
+│ │ Fecha de finalización  [2026-12-15]                   │ │
 │ └───────────────────────────────────────────────────────┘ │
 │ ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐ │
 │ ╎                ＋ Asignar grupo                       ╎ │
@@ -70,6 +78,7 @@ Guía de las pantallas del nuevo flujo:
 │ ┌──────────────────────────────┐ ┌──────────────────────────┐ │
 │ │ 💻 VIRTUAL        ⏳ En 4 días│ │ 🏫 PRESENCIAL  ⚠ Vencido │ │
 │ │ Excel avanzado               │ │ Primeros auxilios        │ │
+│ │ 👥 Operaciones Norte         │ │ 👥 Brigadistas           │ │
 │ │ Fecha límite: 3 oct 2026     │ │ Fecha límite: 15 sep     │ │
 │ │ [✔ Marcar como finalizado]   │ │ [✔ Marcar como finalizado]│ │
 │ └──────────────────────────────┘ └──────────────────────────┘ │
@@ -81,7 +90,7 @@ Guía de las pantallas del nuevo flujo:
 ```text
 ┌────────────────────────────────────────────────────────────────┐
 │ ← Mis cursos                                                    │
-│ 💻 VIRTUAL · Fecha límite 3 oct 2026 (en 4 días)                │
+│ 💻 VIRTUAL · 👥 Operaciones Norte · Fecha límite 3 oct 2026      │
 │ Excel avanzado                                                  │
 │ Formulario de finalización                                      │
 ├────────────────────────────────────────────────────────────────┤
@@ -107,23 +116,26 @@ Guía de las pantallas del nuevo flujo:
 └────────────────────────────────────────────────────────────────┘
 ```
 
-### Seguimiento (`/cursos/:id/seguimiento`)
+### Grupos asignados (`/cursos/:id/grupos`, desde la tarjeta del curso)
 
 ```text
 ┌────────────────────────────────────────────────────────────────┐
-│ ← Cursos · Excel avanzado · Seguimiento                          │
+│ ← Cursos · Excel avanzado · Grupos asignados                     │
 │ ┌ Calificaciones (anónimas) · 27 respuestas ──────────────────┐ │
 │ │ Satisfacción  4,3 ★★★★☆      Utilidad  4,6 ★★★★★             │ │
 │ │ 5 ████████████ 14            5 ███████████████ 18            │ │
 │ │ 4 ███████ 8                  4 ██████ 7                      │ │
 │ │ …                            …                               │ │
 │ └──────────────────────────────────────────────────────────────┘ │
-│ ┌ Operaciones Norte · fecha límite 30 oct ────────────────────┐ │
-│ │ ███████████░░░░░░░ 18 de 42 · 3 vencidos     [Ver personas ▾]│ │
+│ ┌ Operaciones Norte · finaliza 30 oct ────────────────────────┐ │
+│ │ ███████████░░░░░░░ 18 de 42 · 3 vencidos  [Ver integrantes ▾]│ │
 │ │ ( Todos | Pendientes | Vencidos | Finalizados ) [🔍 Buscar]   │ │
-│ │ PERSONA        CORREO        GERENCIA        ESTADO   FECHA   │ │
-│ │ Ana Pérez      ana@…         Operaciones     ✔ Finalizado 24 sep│
-│ │ Luis Rojas     luis@…        —               ⏳ Pendiente      │ │
+│ │ PERSONA              GERENCIA        ESTADO        FINALIZÓ  │ │
+│ │ Ana Pérez · ana@…    Operaciones     ✔ Finalizado  24 sep    │ │
+│ │ Luis Rojas · luis@…  —               ⏳ Pendiente             │ │
+│ └──────────────────────────────────────────────────────────────┘ │
+│ ┌ Operaciones Norte · finaliza 15 dic ────────────────────────┐ │ ← el mismo grupo, otra fecha
+│ │ ░░░░░░░░░░░░░░░░░░ 0 de 42          [Ver integrantes ▾]      │ │
 │ └──────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -153,8 +165,8 @@ src/app/shared/
 
 src/app/features/courses/                        ✏️ cambios
 ├── domain/
-│   ├── course.model.ts                          ✏️ asignación = grupo + fecha; seguimiento
-│   └── course.repository.ts                     ✏️ grupos, sincronizar, seguimiento
+│   ├── course.model.ts                          ✏️ asignación = grupo + fecha; grupos asignados
+│   └── course.repository.ts                     ✏️ grupos, sincronizar, grupos asignados
 ├── infraestructure/
 │   ├── course.dto.ts / course.mapper.ts         ✏️
 │   ├── courses.service.ts                       ✏️
@@ -168,7 +180,7 @@ src/app/features/courses/                        ✏️ cambios
     ├── group-picker/                            nuevo — buscador de grupos
     ├── course-editor/                           ✏️ sección 2
     ├── user-picker/                             🗑 ya no se usa
-    ├── course-progress-page/                    nuevo — seguimiento
+    ├── course-groups-page/                      nuevo — grupos asignados e integrantes
     └── assignment-users/                        nuevo — personas de una asignación
 
 src/app/features/my-courses/                     nuevo
@@ -200,7 +212,7 @@ Las tablas nuevas llevan el encabezado dorado con **texto oscuro**, igual que el
 --cu-on-accent: var(--bs-emphasis-color);  // texto sobre el dorado; usa tu variable de texto oscuro
 ```
 
-Los tokens de cursos (`courses-tokens`) ahora los usan tres pantallas: cursos, seguimiento y mis cursos. Muévelos a `@shared-styles/_courses-tokens.scss` para que ninguna feature dependa de la carpeta de otra.
+Los tokens de cursos (`courses-tokens`) ahora los usan tres pantallas: cursos, grupos asignados y mis cursos. Muévelos a `@shared-styles/_courses-tokens.scss` para que ninguna feature dependa de la carpeta de otra.
 
 ### Mover `describeDue` a `shared/utils/due-date.ts`
 
@@ -515,7 +527,7 @@ export class StarRatingComponent {
 
 ### `domain/course.model.ts` ✏️
 
-Reemplaza `AssignedUser` y `CourseAssignment`, y agrega los tipos del seguimiento:
+Reemplaza `AssignedUser` y `CourseAssignment`, y agrega los tipos de "Grupos asignados":
 
 ```ts
 /** Un grupo de usuarios que se puede asignar al curso. */
@@ -552,27 +564,34 @@ export interface CourseDraft {
 
 export interface SaveCourseResult {
   readonly courseId: number;
-  /** Personas que estaban en dos grupos: quedaron en el primero. */
-  readonly overlappingUsers: number;
+  /** Integrantes de los grupos nuevos sin usuario en DOCCB: no recibieron el curso. */
+  readonly skippedWithoutUser: number;
 }
 
 export interface SyncAssignmentResult {
   readonly added: number;
   readonly removedPending: number;
-  readonly skippedInOtherGroups: number;
+  readonly skippedWithoutUser: number;
 }
 
-// ── Seguimiento ──────────────────────────────────────────────────────
+// ── Grupos asignados ─────────────────────────────────────────────────
 export type CompletionStatus = 'PENDING' | 'COMPLETED';
 export type CompletionStatusFilter = 'ALL' | 'PENDING' | 'OVERDUE' | 'COMPLETED';
 
+/** Una asignación: grupo + fecha de finalización. */
 export interface AssignmentProgress {
   readonly id: number;
+  readonly groupId: number;
   readonly groupName: string;
+  readonly groupRemoved: boolean;
   readonly dueDate: string;
   readonly total: number;
   readonly completed: number;
   readonly overdue: number;
+  /** Integrantes del grupo sin usuario en DOCCB. */
+  readonly withoutUser: number;
+  /** null = no se muestran por asignación (protege el anonimato). */
+  readonly ratings: RatingSummary | null;
 }
 
 export interface RatingSummary {
@@ -597,7 +616,6 @@ export interface CourseProgress {
 export interface AssignedUserProgress {
   readonly displayName: string;
   readonly email: string;
-  readonly inDoccb: boolean;
   readonly status: CompletionStatus;
   readonly isOverdue: boolean;
   readonly completedDate: string | null;
@@ -631,6 +649,7 @@ export abstract class CourseRepository {
   // Nuevos
   abstract searchGroups(term: string): Observable<GroupOption[]>;
   abstract syncAssignment(courseId: number, assignmentId: number): Observable<SyncAssignmentResult>;
+  /** Grupos asignados al curso con su avance y las calificaciones anónimas. */
   abstract getProgress(courseId: number): Observable<CourseProgress>;
   abstract getAssignmentUsers(courseId: number, assignmentId: number, query: AssignedUsersQuery): Observable<AssignedUsersPage>;
 }
@@ -660,7 +679,7 @@ export interface SaveCourseRequestDto {
 
 export interface SaveCourseResultDto {
   courseId: number;
-  overlappingUsers: number;
+  skippedWithoutUser: number;
 }
 
 export interface GroupListItemDto {
@@ -673,7 +692,18 @@ export interface GroupListItemDto {
 export interface CourseProgressDto {
   courseId: number;
   courseName: string;
-  assignments: { assignmentId: number; groupName: string; dueDate: string; total: number; completed: number; overdue: number }[];
+  assignments: {
+    assignmentId: number;
+    groupId: number;
+    groupName: string;
+    groupRemoved: boolean;
+    dueDate: string;
+    total: number;
+    completed: number;
+    overdue: number;
+    withoutUser: number;
+    ratings: RatingSummaryDto | null;
+  }[];
   ratings: RatingSummaryDto;
 }
 
@@ -691,7 +721,6 @@ export interface AssignedUsersPageDto {
   items: {
     displayName: string;
     email: string;
-    inDoccb: boolean;
     status: string;
     isOverdue: boolean;
     completedDate: string | null;
@@ -743,11 +772,15 @@ export function toProgress(dto: CourseProgressDto): CourseProgress {
     courseName: dto.courseName,
     assignments: dto.assignments.map((a) => ({
       id: a.assignmentId,
+      groupId: a.groupId,
       groupName: a.groupName,
+      groupRemoved: a.groupRemoved,
       dueDate: toDateOnly(a.dueDate) ?? '',
       total: a.total,
       completed: a.completed,
       overdue: a.overdue,
+      withoutUser: a.withoutUser,
+      ratings: a.ratings ? { ...a.ratings } : null,
     })),
     ratings: { ...dto.ratings },
   };
@@ -797,7 +830,7 @@ syncAssignment(courseId: number, assignmentId: number): Observable<SyncAssignmen
 
 getProgress(courseId: number): Observable<CourseProgress> {
   return this.http
-    .get<ApiResponse<CourseProgressDto>>(`${this.baseUrl}/${courseId}/progress`)
+    .get<ApiResponse<CourseProgressDto>>(`${this.baseUrl}/${courseId}/assignments`)
     .pipe(map(unwrap), map(toProgress));
 }
 
@@ -853,14 +886,14 @@ export type AssignmentGroupForm = FormGroup<{
   dueDate: FormControl<string>;
 }>;
 
-/** Un grupo no se asigna dos veces al mismo curso. */
-export const uniqueGroups: ValidatorFn = (control: AbstractControl): ValidationErrors | null => {
-  const ids = (control as FormArray<AssignmentGroupForm>)
+/** El mismo grupo puede repetirse, pero no con la misma fecha (así lo exige la base de datos). */
+export const uniqueGroupDueDate: ValidatorFn = (control: AbstractControl): ValidationErrors | null => {
+  const keys = (control as FormArray<AssignmentGroupForm>)
     .getRawValue()
-    .map((assignment) => assignment.group?.id)
-    .filter((id): id is number => id != null);
+    .filter((assignment) => assignment.group && assignment.dueDate)
+    .map((assignment) => `${assignment.group!.id}|${assignment.dueDate}`);
 
-  return new Set(ids).size === ids.length ? null : { duplicatedGroups: true };
+  return new Set(keys).size === keys.length ? null : { duplicatedAssignment: true };
 };
 
 export function createCourseForm(fb: NonNullableFormBuilder): CourseForm {
@@ -868,7 +901,7 @@ export function createCourseForm(fb: NonNullableFormBuilder): CourseForm {
     name: fb.control('', [Validators.required, notBlank, Validators.maxLength(COURSE_NAME_MAX)]),
     modality: fb.control<CourseModality>(CourseModality.Virtual, Validators.required),
     externalId: fb.control('', [Validators.maxLength(EXTERNAL_ID_MAX), Validators.pattern(/^\S*$/)]),
-    assignments: fb.array<AssignmentGroupForm>([], uniqueGroups),
+    assignments: fb.array<AssignmentGroupForm>([], uniqueGroupDueDate),
   });
 }
 
@@ -926,8 +959,6 @@ export class GroupPickerComponent {
   private readonly facade = inject(CoursesFacade);
 
   readonly inputId = input.required<string>();
-  /** Grupos ya elegidos en otras asignaciones del curso. */
-  readonly excludeIds = input<readonly number[]>([]);
   readonly invalid = input(false);
   readonly picked = output<GroupOption>();
 
@@ -936,7 +967,8 @@ export class GroupPickerComponent {
   readonly searching = signal(false);
   readonly activeIndex = signal(0);
 
-  private readonly results = toSignal(
+  /** Sin exclusiones: el mismo grupo puede asignarse otra vez con otra fecha. */
+  readonly options = toSignal(
     toObservable(this.term).pipe(
       map((term) => term.trim()),
       debounceTime(300),
@@ -949,11 +981,6 @@ export class GroupPickerComponent {
     ),
     { initialValue: [] as GroupOption[] },
   );
-
-  readonly options = computed(() => {
-    const excluded = new Set(this.excludeIds());
-    return this.results().filter((group) => !excluded.has(group.id));
-  });
 
   readonly listId = computed(() => `${this.inputId()}-list`);
   readonly panelOpen = computed(() => this.focused());
@@ -1025,7 +1052,7 @@ export class GroupPickerComponent {
             <strong>{{ group.name }}</strong>
             <small>
               {{ group.membersCount }} {{ group.membersCount === 1 ? 'persona' : 'personas' }}
-              @if (group.directoryOnlyCount) { · {{ group.directoryOnlyCount }} solo directorio }
+              @if (group.directoryOnlyCount) { · {{ group.directoryOnlyCount }} sin usuario en DOCCB }
             </small>
           </li>
         } @empty {
@@ -1117,16 +1144,7 @@ readonly assignmentInfo = signal<ReadonlyMap<number, CourseAssignment>>(new Map(
 readonly syncingId = signal<number | null>(null);
 private courseId: number | null = null;
 
-readonly selectedGroupIds = computed(() =>
-  this.formValue()
-    .assignments.map((assignment) => assignment.group?.id)
-    .filter((id): id is number => id != null),
-);
-
-/** Aproximado: no descuenta a quienes están en dos grupos (eso lo resuelve el backend al guardar). */
-readonly totalAssigned = computed(() =>
-  this.formValue().assignments.reduce((sum, assignment) => sum + (assignment.group?.membersCount ?? 0), 0),
-);
+readonly assignmentsCount = computed(() => this.formValue().assignments.length);
 
 // ── En prepare(), después de patchCourseForm(...) ────────────────────
 // this.courseId = detail.id;
@@ -1144,16 +1162,21 @@ clearGroup(index: number): void {
   this.form.controls.assignments.at(index).controls.group.setValue(null);
 }
 
-async removeGroup(index: number): Promise<void> {
+/** Formularios ya diligenciados en una asignación guardada. Con alguno, no se puede quitar. */
+completedIn(index: number): number {
   const id = this.form.controls.assignments.at(index).controls.id.value;
-  const completed = id ? (this.assignmentInfo().get(id)?.completedUsers ?? 0) : 0;
+  return id ? (this.assignmentInfo().get(id)?.completedUsers ?? 0) : 0;
+}
 
-  if (completed > 0) {
+async removeGroup(index: number): Promise<void> {
+  if (this.completedIn(index) > 0) return; // el botón ni siquiera se muestra; la API también lo rechaza
+
+  const id = this.form.controls.assignments.at(index).controls.id.value;
+  if (id) {
     const confirmed = await confirmDanger(
-      '¿Quitar este grupo del curso?',
-      `${completed} ${completed === 1 ? 'persona ya finalizó' : 'personas ya finalizaron'}: su historial se conserva. ` +
-        'Las pendientes dejan de tener el curso asignado.',
-      'Quitar grupo',
+      '¿Quitar esta asignación?',
+      'Sus integrantes dejan de tener el curso asignado. Nadie ha diligenciado el formulario todavía.',
+      'Quitar asignación',
     );
     if (!confirmed) return;
   }
@@ -1174,7 +1197,7 @@ async sync(assignmentId: number): Promise<void> {
     const result = await this.facade.syncAssignment(this.courseId, assignmentId);
     notifySuccess(
       `Grupo actualizado · ${result.added} nuevas · ${result.removedPending} pendientes quitadas` +
-        (result.skippedInOtherGroups ? ` · ${result.skippedInOtherGroups} ya estaban por otro grupo` : ''),
+        (result.skippedWithoutUser ? ` · ${result.skippedWithoutUser} sin usuario en DOCCB` : ''),
     );
 
     const detail = await this.facade.loadDetail(this.courseId);
@@ -1191,8 +1214,8 @@ try {
   const result = await this.facade.save(toCourseDraft(this.form));
   notifySuccess(
     (wasEdit ? 'Curso actualizado' : 'Curso creado') +
-      (result.overlappingUsers
-        ? ` · ${result.overlappingUsers} ${result.overlappingUsers === 1 ? 'persona estaba' : 'personas estaban'} en dos grupos y quedaron en el primero`
+      (result.skippedWithoutUser
+        ? ` · ${result.skippedWithoutUser} ${result.skippedWithoutUser === 1 ? 'persona no recibió' : 'personas no recibieron'} el curso por no tener usuario en DOCCB`
         : ''),
   );
 } catch (e) { … }
@@ -1205,26 +1228,36 @@ try {
 <fieldset class="editor-section" formArrayName="assignments">
   <legend class="editor-section__title">
     <span class="editor-section__step">2</span> Grupos asignados
-    @if (totalAssigned()) {
-      <span class="editor-section__count">≈ {{ totalAssigned() }} personas</span>
+    @if (assignmentsCount()) {
+      <span class="editor-section__count">{{ assignmentsCount() }} {{ assignmentsCount() === 1 ? 'asignación' : 'asignaciones' }}</span>
     }
   </legend>
   <p class="form-text mt-0 mb-3">
-    Cada grupo tiene su propia fecha límite. Al guardar, cada integrante queda asignado en estado
-    <strong>Pendiente</strong>. Si alguien está en dos grupos, queda en el primero de la lista.
+    Cada asignación es un grupo con su fecha de finalización; el mismo grupo puede repetirse con otra fecha.
+    Al guardar, cada integrante con usuario en DOCCB queda <strong>Pendiente</strong> y debe diligenciar el
+    formulario de esa asignación.
   </p>
 
   @for (assignment of form.controls.assignments.controls; track assignment; let i = $index) {
     <div class="group-card" [formGroupName]="i">
       <div class="group-card__head">
         <span class="group-card__title">Asignación {{ i + 1 }}</span>
-        <button
-          type="button"
-          class="btn btn-sm btn-link text-danger ms-auto p-1"
-          [attr.aria-label]="'Quitar asignación ' + (i + 1)"
-          (click)="removeGroup(i)">
-          <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
-        </button>
+        @if (completedIn(i); as completed) {
+          <span
+            class="ms-auto p-1 text-body-secondary"
+            [title]="completed + (completed === 1 ? ' persona ya diligenció' : ' personas ya diligenciaron') + ' el formulario. Puedes cambiar la fecha.'">
+            <i class="fa-solid fa-lock" aria-hidden="true"></i>
+            <span class="visually-hidden">No se puede quitar: ya tiene formularios diligenciados.</span>
+          </span>
+        } @else {
+          <button
+            type="button"
+            class="btn btn-sm btn-link text-danger ms-auto p-1"
+            [attr.aria-label]="'Quitar asignación ' + (i + 1)"
+            (click)="removeGroup(i)">
+            <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+          </button>
+        }
       </div>
 
       <div class="mb-2">
@@ -1237,16 +1270,21 @@ try {
             @if (assignment.controls.group.disabled) {
               <i
                 class="fa-solid fa-lock ms-auto"
-                title="Para cambiar el grupo, quita esta asignación y agrega otra."
+                title="Una asignación guardada no cambia de grupo. Agrega otra asignación."
                 aria-hidden="true"></i>
             } @else {
               <button type="button" class="btn-close btn-sm ms-auto" aria-label="Cambiar grupo" (click)="clearGroup(i)"></button>
             }
           </div>
+          @if (selected.directoryOnlyCount && assignment.controls.group.enabled) {
+            <p class="small text-warning-emphasis mt-1 mb-0">
+              <i class="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
+              {{ selected.directoryOnlyCount }} sin usuario en DOCCB no recibirán el curso.
+            </p>
+          }
         } @else {
           <app-group-picker
             [inputId]="'group-' + i"
-            [excludeIds]="selectedGroupIds()"
             [invalid]="hasError(assignment.controls.group)"
             (picked)="pickGroup(i, $event)" />
           @if (hasError(assignment.controls.group, 'required')) {
@@ -1256,7 +1294,7 @@ try {
       </div>
 
       <div class="mb-2">
-        <label class="form-label small mb-1" [for]="'due-' + i">Fecha límite de finalización</label>
+        <label class="form-label small mb-1" [for]="'due-' + i">Fecha de finalización</label>
         <input
           type="date"
           class="form-control group-card__date"
@@ -1309,8 +1347,10 @@ try {
     </div>
   }
 
-  @if (form.controls.assignments.hasError('duplicatedGroups')) {
-    <div class="alert alert-warning py-2 small mb-3" role="alert">Ese grupo ya está en la lista.</div>
+  @if (form.controls.assignments.hasError('duplicatedAssignment')) {
+    <div class="alert alert-warning py-2 small mb-3" role="alert">
+      Hay un grupo repetido con la misma fecha. Cambia la fecha o quita una de las dos.
+    </div>
   }
 
   <button type="button" class="add-group" (click)="addGroup()">
@@ -1374,10 +1414,11 @@ try {
 
 ### Tarjeta del curso ✏️ — pie con grupos y avance
 
-Hoy el pie dice "0 usuarios". Con grupos, la tarjeta muestra cuántos grupos tiene el curso, cuántas personas y cuántas finalizaron, y suma la acción **Seguimiento** junto a ✎ y 🗑.
+Hoy el pie dice "0 usuarios". Con grupos, la tarjeta muestra cuántas asignaciones (grupo + fecha) tiene el curso, cuántas personas y cuántos formularios se diligenciaron, y suma la acción **Grupos asignados** junto a ✎ y 🗑: abre los grupos del curso (grupo + fecha) y sus integrantes.
 
 ```ts
 // domain/course.model.ts — CourseSummary
+/** Asignaciones (grupo + fecha). El mismo grupo repetido cuenta dos veces. */
 readonly groupsCount: number;
 readonly assignedCount: number;
 readonly completedCount: number;
@@ -1405,11 +1446,11 @@ En `course-card.component.html`, junto a los botones ✎ y 🗑 del encabezado:
 ```html
 <a
   class="icon-btn"
-  [routerLink]="['/cursos', course().id, 'seguimiento']"
+  [routerLink]="['/cursos', course().id, 'grupos']"
   queryParamsHandling="preserve"
-  [attr.aria-label]="'Seguimiento de ' + course().name"
-  title="Seguimiento">
-  <i class="fa-solid fa-chart-column" aria-hidden="true"></i>
+  [attr.aria-label]="'Grupos asignados de ' + course().name"
+  title="Grupos asignados e integrantes">
+  <i class="fa-solid fa-users-viewfinder" aria-hidden="true"></i>
 </a>
 ```
 
@@ -1420,7 +1461,7 @@ Y el pie reemplaza al `meta-item` de asignados:
   @if (course().groupsCount) {
     <span class="meta-item">
       <i class="fa-solid fa-user-group" aria-hidden="true"></i>
-      {{ course().groupsCount }} {{ course().groupsCount === 1 ? 'grupo' : 'grupos' }} ·
+      {{ course().groupsCount }} {{ course().groupsCount === 1 ? 'asignación' : 'asignaciones' }} ·
       {{ course().assignedCount }} {{ course().assignedCount === 1 ? 'persona' : 'personas' }}
     </span>
   } @else {
@@ -1481,7 +1522,9 @@ Y el pie reemplaza al `meta-item` de asignados:
 
 ---
 
-## 6. Paso 3 — Seguimiento (administración)
+## 6. Paso 3 — Grupos asignados (administración)
+
+Desde la tarjeta de cada curso, el administrador abre sus **grupos asignados**: cada asignación (grupo + fecha) con su avance y, al desplegarla, sus **integrantes** con el estado del formulario, la gerencia y la fecha en que finalizaron.
 
 ### `application/course-progress.facade.ts`
 
@@ -1513,7 +1556,7 @@ export class CourseProgressFacade {
       this._progress.set(await firstValueFrom(this.repository.getProgress(courseId)));
       this._status.set('ready');
     } catch (e) {
-      this._error.set(toErrorMessage(e, 'No se pudo cargar el seguimiento.'));
+      this._error.set(toErrorMessage(e, 'No se pudieron cargar los grupos asignados.'));
       this._status.set('error');
     }
   }
@@ -1851,10 +1894,10 @@ export class AssignmentUsersComponent {
 }
 ```
 
-### `presentation/course-progress-page/course-progress-page.component.ts`
+### `presentation/course-groups-page/course-groups-page.component.ts`
 
 ```ts
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { CourseProgressFacade } from '../../application/course-progress.facade';
@@ -1863,18 +1906,23 @@ import { COURSES_INFRASTRUCTURE_PROVIDERS } from '../../infraestructure/courses.
 import { AssignmentUsersComponent } from '../assignment-users/assignment-users.component';
 
 @Component({
-  selector: 'app-course-progress-page',
+  selector: 'app-course-groups-page',
   imports: [RouterLink, DatePipe, DecimalPipe, AssignmentUsersComponent],
   providers: [...COURSES_INFRASTRUCTURE_PROVIDERS, CourseProgressFacade],
-  templateUrl: './course-progress-page.component.html',
-  styleUrl: './course-progress-page.component.scss',
+  templateUrl: './course-groups-page.component.html',
+  styleUrl: './course-groups-page.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class CourseProgressPageComponent {
+export class CourseGroupsPageComponent {
   protected readonly facade = inject(CourseProgressFacade);
 
   readonly scores = [5, 4, 3, 2, 1, 0];
   readonly expanded = signal<ReadonlySet<number>>(new Set());
+
+  /** La API solo manda promedios por asignación cuando no rompen el anonimato. */
+  readonly hasPerAssignmentRatings = computed(
+    () => this.facade.progress()?.assignments.some((a) => a.ratings?.visible) ?? false,
+  );
 
   constructor() {
     void this.facade.load(Number(inject(ActivatedRoute).snapshot.paramMap.get('id')));
@@ -1905,7 +1953,7 @@ export class CourseProgressPageComponent {
 }
 ```
 
-### `course-progress-page.component.html`
+### `course-groups-page.component.html`
 
 ```html
 <section class="cp">
@@ -1923,9 +1971,61 @@ export class CourseProgressPageComponent {
     @default {
       @if (facade.progress(); as progress) {
         <h1 class="cp__title">{{ progress.courseName }}</h1>
-        <p class="cp__subtitle">Seguimiento del curso</p>
+        <p class="cp__subtitle">Grupos asignados · cada persona diligencia un formulario por asignación</p>
 
-        <!-- ── Calificaciones anónimas ─────────────────────────────── -->
+        <!-- ── Asignaciones: grupo + fecha ─────────────────────────── -->
+        @for (assignment of progress.assignments; track assignment.id; let i = $index) {
+          <section class="cp-card cp-assignment" [style.--i]="i">
+            <div class="cp-assignment__head">
+              <div>
+                <h2 class="cp-card__title mb-1">
+                  {{ assignment.groupName }}
+                  @if (assignment.groupRemoved) {
+                    <span class="cp__count" title="El grupo se eliminó; sus personas siguen asignadas">Grupo eliminado</span>
+                  }
+                </h2>
+                <span class="text-body-secondary small">Finaliza el {{ assignment.dueDate | date: "d 'de' MMM 'de' y" }}</span>
+              </div>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-secondary"
+                [attr.aria-expanded]="expanded().has(assignment.id)"
+                (click)="toggle(assignment.id)">
+                {{ expanded().has(assignment.id) ? 'Ocultar integrantes' : 'Ver integrantes' }}
+              </button>
+            </div>
+
+            <div class="cp-progress" role="img" [attr.aria-label]="assignment.completed + ' de ' + assignment.total + ' finalizaron'">
+              <span [style.width.%]="percent(assignment)"></span>
+            </div>
+            <p class="small mb-0">
+              <strong>{{ assignment.completed }}</strong> de {{ assignment.total }} finalizaron ({{ percent(assignment) }} %)
+              @if (assignment.overdue) {
+                · <span class="text-danger fw-semibold">{{ assignment.overdue }} vencidos</span>
+              }
+              @if (assignment.withoutUser) {
+                · <span class="text-body-secondary" title="Están en el grupo pero no en el maestro de usuarios">{{ assignment.withoutUser }} sin usuario en DOCCB</span>
+              }
+            </p>
+
+            @if (assignment.ratings?.visible) {
+              <p class="small mb-0 mt-1 text-body-secondary">
+                <i class="fa-solid fa-user-secret me-1" aria-hidden="true"></i>
+                Satisfacción <strong>{{ assignment.ratings!.satisfactionAverage | number: '1.1-1' }}</strong> ·
+                Utilidad <strong>{{ assignment.ratings!.usefulnessAverage | number: '1.1-1' }}</strong>
+                ({{ assignment.ratings!.responses }} respuestas)
+              </p>
+            }
+
+            @if (expanded().has(assignment.id)) {
+              <app-assignment-users [assignmentId]="assignment.id" />
+            }
+          </section>
+        } @empty {
+          <p class="text-body-secondary">Este curso aún no tiene grupos asignados.</p>
+        }
+
+        <!-- ── Calificaciones anónimas del curso ───────────────────── -->
         <section class="cp-card" aria-labelledby="cp-ratings-title">
           <h2 id="cp-ratings-title" class="cp-card__title">
             Calificaciones
@@ -1939,6 +2039,12 @@ export class CourseProgressPageComponent {
               Así nadie puede deducir qué calificó cada persona.
             </p>
           } @else {
+            @if (!hasPerAssignmentRatings()) {
+              <p class="small text-body-secondary">
+                Los promedios por asignación aparecen cuando cada asignación con respuestas tenga al menos
+                {{ progress.ratings.minimumResponses }}; si no, restando se podría deducir qué calificó alguien.
+              </p>
+            }
             <div class="row g-4">
               @for (metric of [
                 { label: 'Satisfacción', average: progress.ratings.satisfactionAverage, distribution: progress.ratings.satisfactionDistribution },
@@ -1964,41 +2070,6 @@ export class CourseProgressPageComponent {
             </div>
           }
         </section>
-
-        <!-- ── Avance por grupo ────────────────────────────────────── -->
-        @for (assignment of progress.assignments; track assignment.id; let i = $index) {
-          <section class="cp-card cp-assignment" [style.--i]="i">
-            <div class="cp-assignment__head">
-              <div>
-                <h2 class="cp-card__title mb-1">{{ assignment.groupName }}</h2>
-                <span class="text-body-secondary small">Fecha límite {{ assignment.dueDate | date: 'd MMM y' }}</span>
-              </div>
-              <button
-                type="button"
-                class="btn btn-sm btn-outline-secondary"
-                [attr.aria-expanded]="expanded().has(assignment.id)"
-                (click)="toggle(assignment.id)">
-                {{ expanded().has(assignment.id) ? 'Ocultar personas' : 'Ver personas' }}
-              </button>
-            </div>
-
-            <div class="cp-progress" role="img" [attr.aria-label]="assignment.completed + ' de ' + assignment.total + ' finalizaron'">
-              <span [style.width.%]="percent(assignment)"></span>
-            </div>
-            <p class="small mb-0">
-              <strong>{{ assignment.completed }}</strong> de {{ assignment.total }} finalizaron ({{ percent(assignment) }} %)
-              @if (assignment.overdue) {
-                · <span class="text-danger fw-semibold">{{ assignment.overdue }} vencidos</span>
-              }
-            </p>
-
-            @if (expanded().has(assignment.id)) {
-              <app-assignment-users [assignmentId]="assignment.id" />
-            }
-          </section>
-        } @empty {
-          <p class="text-body-secondary">Este curso aún no tiene grupos asignados.</p>
-        }
       }
     }
   }
@@ -2007,7 +2078,7 @@ export class CourseProgressPageComponent {
 
 > El `@for` con un arreglo literal en la plantilla funciona en Angular 17+. Si tu versión se queja, arma ese arreglo como un `computed` en el componente.
 
-### `course-progress-page.component.scss`
+### `course-groups-page.component.scss`
 
 ```scss
 @use '@shared-styles/courses-tokens' as tokens;
@@ -2183,16 +2254,16 @@ export class CourseProgressPageComponent {
 }
 ```
 
-Si usas el listado en tabla ([listado-cursos-angular.md](listado-cursos-angular.md)) en lugar de tarjetas, la acción **Seguimiento** va en la columna de acciones:
+Si usas el listado en tabla ([listado-cursos-angular.md](listado-cursos-angular.md)) en lugar de tarjetas, la acción **Grupos asignados** va en la columna de acciones:
 
 ```html
 <a
   class="action-btn"
-  [routerLink]="['/cursos', row.course.id, 'seguimiento']"
+  [routerLink]="['/cursos', row.course.id, 'grupos']"
   queryParamsHandling="preserve"
-  [attr.aria-label]="'Seguimiento de ' + row.course.name"
-  title="Seguimiento">
-  <i class="fa-solid fa-chart-column" aria-hidden="true"></i>
+  [attr.aria-label]="'Grupos asignados de ' + row.course.name"
+  title="Grupos asignados e integrantes">
+  <i class="fa-solid fa-users-viewfinder" aria-hidden="true"></i>
 </a>
 ```
 
@@ -2206,11 +2277,13 @@ Si usas el listado en tabla ([listado-cursos-angular.md](listado-cursos-angular.
 export type CompletionStatus = 'PENDING' | 'COMPLETED';
 export type CourseModalityCode = 'VIRTUAL' | 'PRESENCIAL';
 
+/** Una asignación de la persona. El mismo curso puede aparecer varias veces (grupo + fecha distintos). */
 export interface MyCourse {
   readonly assignmentUserId: number;
   readonly courseId: number;
   readonly courseName: string;
   readonly modality: CourseModalityCode;
+  readonly groupName: string;
   /** yyyy-MM-dd */
   readonly dueDate: string;
   readonly status: CompletionStatus;
@@ -2223,6 +2296,7 @@ export interface CompletionForm {
   readonly assignmentUserId: number;
   readonly courseName: string;
   readonly modality: CourseModalityCode;
+  readonly groupName: string;
   readonly dueDate: string;
   readonly status: CompletionStatus;
   readonly completedDate: string | null;
@@ -2268,6 +2342,7 @@ export interface MyCourseDto {
   courseId: number;
   courseName: string;
   modality: string;
+  groupName: string;
   dueDate: string;
   status: string;
   completedDate: string | null;
@@ -2584,6 +2659,9 @@ export class MyCoursesPageComponent {
               </div>
 
               <h2 class="mc-card__name">{{ course.courseName }}</h2>
+              <p class="mc-card__group">
+                <i class="fa-solid fa-user-group" aria-hidden="true"></i> {{ course.groupName }}
+              </p>
 
               @if (course.status === 'COMPLETED') {
                 <p class="mc-card__meta">Finalizado el {{ course.completedDate | date: "d 'de' MMMM 'de' y" }}</p>
@@ -2742,6 +2820,7 @@ export class MyCoursesPageComponent {
 
 .mc-card__name { margin: 0; font-size: 1.1rem; font-weight: 700; }
 .mc-card__meta { margin: 0; color: var(--cu-muted); font-size: 0.85rem; }
+.mc-card__group { margin: 0; color: var(--cu-muted); font-size: 0.8rem; font-weight: 600; }
 .mc-card__cta { align-self: flex-start; margin-top: 0.5rem; }
 
 .mc__empty {
@@ -2882,7 +2961,9 @@ export class CompletionFormPageComponent {
         <header class="cf__head">
           <p class="cf__eyebrow">
             <i class="fa-solid {{ modality[form.modality].icon }}" aria-hidden="true"></i>
-            {{ modality[form.modality].label }} · Fecha límite {{ dueInfo()?.date }}
+            {{ modality[form.modality].label }} ·
+            <i class="fa-solid fa-user-group" aria-hidden="true"></i> {{ form.groupName }} ·
+            Fecha límite {{ dueInfo()?.date }}
             @if (form.status === 'PENDING') {
               <span class="cf__due" [attr.data-state]="dueInfo()?.state">{{ dueInfo()?.relative }}</span>
             }
@@ -3209,12 +3290,12 @@ En `src/app/app.routes.ts`:
 
 // Administración de cursos
 {
-  path: 'cursos/:id/seguimiento',
+  path: 'cursos/:id/grupos',
   canActivate: [permissionGuard],
   data: { permissionPath: 'courses' },
   loadComponent: () =>
-    import('@features/courses/presentation/course-progress-page/course-progress-page.component')
-      .then(m => m.CourseProgressPageComponent),
+    import('@features/courses/presentation/course-groups-page/course-groups-page.component')
+      .then(m => m.CourseGroupsPageComponent),
 },
 ```
 
@@ -3288,14 +3369,17 @@ describe('course-form', () => {
     expect(group.getRawValue().group?.id).toBe(12);
   });
 
-  it('detecta un grupo repetido', () => {
+  it('acepta el mismo grupo con otra fecha y rechaza la misma fecha', () => {
     const form = createCourseForm(fb);
     const norte = { id: 12, name: 'Norte', membersCount: 40, directoryOnlyCount: 0 };
     form.controls.assignments.push(createAssignmentGroup(fb));
     form.controls.assignments.push(createAssignmentGroup(fb));
-    form.controls.assignments.at(0).controls.group.setValue(norte);
-    form.controls.assignments.at(1).controls.group.setValue(norte);
-    expect(form.controls.assignments.hasError('duplicatedGroups')).toBeTrue();
+    form.controls.assignments.at(0).patchValue({ group: norte, dueDate: '2099-10-30' });
+    form.controls.assignments.at(1).patchValue({ group: norte, dueDate: '2099-12-15' });
+    expect(form.controls.assignments.hasError('duplicatedAssignment')).toBeFalse();
+
+    form.controls.assignments.at(1).patchValue({ dueDate: '2099-10-30' });
+    expect(form.controls.assignments.hasError('duplicatedAssignment')).toBeTrue();
   });
 });
 
@@ -3314,15 +3398,17 @@ describe('CompletionFormFacade', () => {
 
 ### Revisión con usuarios reales
 
-- Asignar dos grupos que comparten personas: el aviso dice cuántas quedaron en el primero.
-- Abrir "Mis cursos" con una cuenta de prueba: aparece el curso como Pendiente.
+- Asignar el mismo grupo dos veces con fechas distintas: se guardan dos asignaciones; en "Grupos asignados" aparecen las dos con sus integrantes.
+- Asignar un grupo con personas "solo directorio": el editor avisa antes de guardar y el mensaje final dice cuántas no recibieron el curso.
+- Intentar quitar una asignación con formularios: aparece el candado, no el 🗑.
+- Abrir "Mis cursos" con una cuenta que está en las dos asignaciones: ve dos tarjetas del mismo curso, cada una con su grupo y su fecha; finalizar una deja la otra pendiente.
 - En el formulario, la gerencia aparece bloqueada y coincide con la del directorio.
 - Enviar sin tocar las estrellas: las dos se marcan en rojo y no se envía.
 - Elegir 0 en una: se acepta.
 - Enviar: aparece la animación de éxito; "Mis cursos" lo muestra como Finalizado.
 - Volver a abrir el mismo formulario: dice "Ya finalizaste" y no muestra las calificaciones.
-- Hacer doble clic muy rápido en "Marcar como finalizado": solo queda una respuesta en el seguimiento.
-- Seguimiento con 2 respuestas: no hay promedios y lo explica. Con 3: aparecen promedios y distribución.
+- Hacer doble clic muy rápido en "Marcar como finalizado": solo queda una respuesta en "Grupos asignados".
+- "Grupos asignados" con 2 respuestas: no hay promedios y lo explica. Con 3: aparecen promedios y distribución. Si una asignación tiene menos de 3, no aparece ninguno por asignación.
 - Solo con teclado: Tab hasta las estrellas, flechas para cambiar, `4` para fijar 4 estrellas, Enter en el botón.
 - Con lector de pantalla: cada estrella se anuncia con su número y su significado.
 
@@ -3333,7 +3419,11 @@ describe('CompletionFormFacade', () => {
 - [ ] `describeDue` movido a `@shared/utils/due-date` y los imports actualizados.
 - [ ] Tokens de cursos en `@shared-styles/courses-tokens`, con `--cu-on-accent` (texto oscuro sobre el dorado).
 - [ ] Ningún color escrito a mano: estrellas, barras y encabezados salen de los tokens.
-- [ ] Tarjeta del curso con "N grupos · N personas", avance y acción Seguimiento.
+- [ ] Tarjeta del curso con "N asignaciones · N personas", avance y acción Grupos asignados.
+- [ ] El mismo grupo se puede asignar otra vez con otra fecha; grupo + fecha repetidos se rechazan.
+- [ ] Asignaciones con formularios muestran candado en vez de 🗑.
+- [ ] Aviso de integrantes sin usuario en DOCCB al elegir el grupo y al guardar.
+- [ ] "Mis cursos" y el formulario muestran el grupo de la asignación.
 - [ ] `user-picker` y `users-directory` eliminados de la feature de cursos.
 - [ ] Editor con "Grupos asignados", grupo bloqueado en asignaciones guardadas y "Actualizar desde el grupo".
 - [ ] Quien administra cursos puede leer la lista de grupos (permiso o endpoint de lectura).
@@ -3341,6 +3431,6 @@ describe('CompletionFormFacade', () => {
 - [ ] Aviso de anonimato visible sobre las estrellas.
 - [ ] La gerencia se muestra bloqueada y el formulario se puede enviar aunque no llegue.
 - [ ] Confirmación antes de enviar.
-- [ ] Seguimiento con promedios solo a partir del mínimo de respuestas.
-- [ ] Rutas `mis-cursos`, `mis-cursos/:id/finalizar` y `cursos/:id/seguimiento`; permiso `my-courses` para todos.
+- [ ] "Grupos asignados" con promedios solo a partir del mínimo de respuestas (y por asignación solo si todas llegan).
+- [ ] Rutas `mis-cursos`, `mis-cursos/:id/finalizar` y `cursos/:id/grupos`; permiso `my-courses` para todos.
 - [ ] Probado con teclado, lector de pantalla, móvil y `prefers-reduced-motion`.

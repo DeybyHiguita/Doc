@@ -1,18 +1,24 @@
 # 🎓 Cursos por grupos y formulario de finalización — API (.NET 8) y SQL Server
 
-Esta guía **cambia cómo se asignan los cursos** y agrega el **formulario de finalización**.
+Esta guía conecta los **grupos de usuarios** con los **cursos** y agrega el **formulario de finalización**. Está hecha sobre el esquema real de la base de datos ([referencia-estilos-y-capas-doccb.md](referencia-estilos-y-capas-doccb.md), sección 3).
 
-**Antes** (guía [cursos-api-sqlserver.md](cursos-api-sqlserver.md)): cada curso tenía grupos armados a mano, persona por persona.
-**Ahora:** a un curso se le asignan uno o varios **grupos de usuarios** (de [grupos-usuarios-api-sqlserver.md](grupos-usuarios-api-sqlserver.md)), cada uno con su **fecha límite**. Al guardar, cada integrante queda asignado en estado **Pendiente**.
+**Cómo funciona:**
 
-Cada asignación tiene su **formulario de finalización**, que diligencia la propia persona:
+- A un curso se le asignan **grupos**. Cada asignación es un grupo + una **fecha de finalización**.
+- El **mismo grupo** puede asignarse **varias veces** al mismo curso, con fechas distintas (por ejemplo, el grupo 1 diez veces, una por cohorte).
+- Al guardar una asignación, cada integrante del grupo queda relacionado con ella en `course_assignment_user`, en estado **Pendiente**.
+- **Cada persona, en cada asignación**, diligencia su propio formulario de finalización. Si la persona está en el grupo 1 asignado dos veces, tiene dos formularios.
+- En el listado de cursos, el administrador ve los grupos asignados a cada curso (grupo + fecha) y, en cada uno, sus integrantes con el estado del formulario.
+
+**El formulario de finalización:**
 
 | Campo | Origen | ¿Lo edita el usuario? |
 |---|---|---|
-| Nombre del curso | Ya guardado en `dbo.course` | No |
-| Persona asignada | La relación generada desde el grupo | No |
+| Nombre del curso | `dbo.course` | No |
+| Grupo y fecha de finalización | La asignación | No |
+| Persona | `dbo.course_assignment_user` → `dbo.users` | No |
 | Gerencia | Directorio activo, consultada al abrir el formulario | No (bloqueado) |
-| Estado | `PENDING` al asignar → `COMPLETED` al enviar | Sí, al enviar |
+| Estado | **Pendiente** al asignar → **Finalizado** al enviar | Sí, al enviar |
 | Satisfacción (0 a 5) | Anónima | Sí |
 | Utilidad del curso (0 a 5) | Anónima | Sí |
 | Fecha de registro | La pone el servidor | No se le pide |
@@ -26,53 +32,55 @@ Cada asignación tiene su **formulario de finalización**, que diligencia la pro
 
 | # | Tema | Decisión |
 |---|---|---|
-| 1 | **Anonimato de las calificaciones.** Si la calificación guarda al usuario, a la asignación o la hora exacta, deja de ser anónima. | Tabla aparte `course_rating` **sin** llave al usuario ni a la asignación, solo al curso. Id aleatorio (`NEWID`) para que el orden de inserción no delate a nadie, y fecha **sin hora**. Los promedios solo se muestran con **3 respuestas o más**. |
-| 2 | **Límite honesto del anonimato.** Si en un día solo una persona finalizó un curso, quien tenga acceso a la base de datos puede cruzar la fecha de la calificación con la de su finalización. | Es anonimato frente a la aplicación y los reportes, no frente a un administrador de base de datos. Si se necesita más, guardar la calificación con la semana o el mes en lugar del día (sección 4). |
-| 3 | **Registrar quién calificó sin guardar qué calificó.** | La finalización (con usuario) y la calificación (sin usuario) se guardan en la **misma transacción**. La calificación solo se acepta si el estado pasa de `PENDING` a `COMPLETED` en ese momento: así nadie califica dos veces y nadie califica sin haber finalizado. |
-| 4 | **Doble clic en "Finalizar".** Dos peticiones simultáneas podrían crear dos calificaciones. | El cambio de estado es un `UPDATE … WHERE status = 'PENDING'`: la segunda petición no encuentra la fila pendiente y responde `409`. |
-| 5 | **¿Qué significa 0?** Si el formulario empieza en 0, quien no toque las estrellas registra "pésimo" sin quererlo. | El 0 es válido, pero **se tiene que elegir**. El backend exige las dos calificaciones y rechaza valores fuera de 0 a 5. |
-| 6 | **La gerencia bloqueada en pantalla no es segura.** El navegador podría enviar otra. | El usuario no la envía. El backend la vuelve a consultar al recibir el formulario y la guarda en la **finalización**, no en la calificación. |
-| 7 | **¿Se puede volver a Pendiente?** | No desde el formulario. Una vez finalizado, la calificación ya quedó guardada sin dueño y no se podría corregir. |
-| 8 | **¿Quién es el usuario que abre el formulario?** El correo del token (`preferred_username`) suele ser el UPN, que puede no coincidir con el correo guardado. | Se identifica por el **object id** de Entra ID (`oid`) y, como respaldo, por los correos del token. Así funciona también para personas "solo directorio". |
-| 9 | **El grupo cambia después de asignarlo.** | La relación se genera al asignar (foto). Un botón **"Actualizar desde el grupo"** agrega a los nuevos integrantes y quita a los pendientes que salieron; los que ya finalizaron se conservan. |
-| 10 | **Una persona en dos grupos del mismo curso.** | Queda asignada por el primero y se informa cuántas personas pasaron por eso. La base de datos lo garantiza con un índice único `(course_id, email)`. |
-| 11 | **Quitar un grupo que ya tiene finalizados.** | Retiro lógico: se borran los pendientes y se conserva el historial de quienes finalizaron. |
-| 12 | **"Vencido".** | No se guarda: se calcula (`PENDING` y fecha límite pasada, en hora de Colombia). |
-| 13 | **Personas "solo directorio".** En la guía de cursos anterior no podían recibir cursos porque se asignaba contra `dbo.users`. | Ahora la persona asignada se identifica igual que en los grupos: correo + `user_id` (si está en el maestro) + `entra_object_id`. Pueden recibir cursos y diligenciar su formulario. |
-| 14 | **Registros en logs.** Un middleware que guarde el cuerpo de las peticiones rompería el anonimato. | Excluye `POST /api/my-courses/{id}/complete` del registro de cuerpos y nunca escribas en un log el usuario junto a sus calificaciones. |
+| 1 | **Un grupo repetido en el mismo curso.** Es válido (cohortes con fechas distintas), pero el mismo grupo con la **misma fecha** dos veces es un error de captura. | Índice único `(course_id, user_group_id, due_date)`. |
+| 2 | **Una persona en varias asignaciones del mismo curso.** Pasa si el grupo se repite o si está en dos grupos. | Cada asignación es un formulario distinto. Se quita el índice de la primera guía que impedía repetir a una persona en el mismo curso, y queda único `(assignment_id, user_id)`: una persona una sola vez **por asignación**. |
+| 3 | **Personas "solo directorio".** `course_assignment_user` se relaciona con `dbo.users` por `user_id`. Quien no está en el maestro no tiene `user_id`. | No se asignan. Al guardar, la API responde cuántas personas quedaron fuera (`skippedWithoutUser`), y la pantalla lo avisa antes de guardar. Tampoco podrían entrar a DOCCB a diligenciar el formulario. |
+| 4 | **¿Dónde se guarda el estado?** Una columna `status` puede quedar "Finalizado" sin fecha ni formulario. | El estado se **deriva**: sin fila en `course_assignment_completion` = **Pendiente**; con fila = **Finalizado**. El estado por defecto al asignar es Pendiente sin escribir nada, y no hay estados inconsistentes. |
+| 5 | **Anonimato de las calificaciones.** Si la calificación guarda al usuario o la hora exacta, deja de ser anónima. | Tabla aparte `course_rating` **sin** usuario ni `course_assignment_user`. Tiene el curso y la asignación (grupo + fecha) para poder ver resultados por cohorte, un id aleatorio (`NEWID`) y la fecha **sin hora**. |
+| 6 | **Promedios que delatan.** Con menos de 3 respuestas, o restando el total del curso menos una asignación visible, se puede deducir qué calificó alguien. | Promedios solo con **3 respuestas o más**. Los resultados **por asignación** solo se muestran si **todas** las asignaciones con respuestas llegan a 3; si no, solo el total del curso. |
+| 7 | **Registrar quién finalizó sin guardar qué calificó.** | La finalización (con persona) y la calificación (sin persona) se guardan en el **mismo `SaveChanges`**, que es una sola transacción: se guardan las dos o ninguna. |
+| 8 | **Doble clic en "Finalizar".** | Índice único en `course_assignment_completion (assignment_user_id)`. La segunda petición choca con el índice, no guarda nada (ni calificación) y responde `409`. |
+| 9 | **¿Qué significa 0?** | El 0 es válido, pero **se tiene que elegir**. La API exige las dos calificaciones y rechaza valores fuera de 0 a 5. |
+| 10 | **La gerencia bloqueada en pantalla no es segura.** | El navegador no la envía. La API la vuelve a consultar al recibir el formulario y la guarda en la finalización. |
+| 11 | **¿Quién abre el formulario?** | La API busca al usuario del token en `dbo.users` por `corporative_email` y solo muestra filas con **su** `user_id`. Un id ajeno responde `404`, igual que uno que no existe. |
+| 12 | **El grupo cambia después de asignarlo.** | La relación es una foto al asignar. **"Actualizar desde el grupo"** agrega a los nuevos integrantes y quita a los **pendientes** que salieron. Quien ya finalizó se conserva. |
+| 13 | **Quitar una asignación que ya tiene formularios.** Borrarla borraría el historial. | No se permite (`409`, con cuántas personas finalizaron). Se puede cambiar su fecha. La base de datos también lo protege: la llave de la finalización no es en cascada. |
+| 14 | **Cambiar el grupo de una asignación guardada.** | No se permite: sus personas y formularios son de ese grupo. Se agrega otra asignación. |
+| 15 | **"Vencido".** | No se guarda: se calcula (pendiente y fecha pasada, en hora de Colombia). |
+| 16 | **Logs.** Un middleware que guarde el cuerpo de las peticiones rompería el anonimato. | Excluye `POST /api/my-courses/{id}/complete` del registro de cuerpos. |
 
 ---
 
-## 2. 🔄 Flujo completo
+## 2. 🔄 Flujo
 
 ```text
- ADMINISTRADOR                                         COLABORADOR
- ─────────────                                         ───────────
+ ADMINISTRADOR                                          COLABORADOR
+ ─────────────                                          ───────────
  Crea / edita el curso
-   └─ asigna grupos, cada uno con fecha límite
+   └─ asigna grupos: (grupo 1, 30 oct) (grupo 1, 15 dic) (grupo 2, 30 oct)
           │
           ▼
- Se genera course_assignment_user
- (una fila por integrante, estado PENDING) ──────────► "Mis cursos": aparece como Pendiente
-                                                        │
-                                                        ▼
-                                             Abre el formulario de finalización
-                                               · curso, fecha límite, su nombre
-                                               · gerencia ◄── directorio activo (bloqueada)
-                                               · ★★★★☆ satisfacción  (anónima)
-                                               · ★★★★★ utilidad      (anónima)
-                                                        │ Enviar
-                                                        ▼
-                                             Una transacción:
-                                               1. UPDATE … SET status = COMPLETED,
-                                                  completed_date, management_name
-                                                  WHERE id = @id AND status = PENDING
-                                               2. INSERT course_rating (sin usuario)
-          │                                             │
-          ▼                                             ▼
- Seguimiento: avance por grupo,                "Mis cursos": Finalizado
- personas con estado y gerencia,
- promedios anónimos (≥ 3 respuestas)
+ course_assignment: una fila por grupo + fecha
+ course_assignment_user: una fila por integrante  ──────► "Mis cursos": cada asignación
+ con user_id, en cada asignación (Pendiente)              aparece como Pendiente
+                                                          │
+                                                          ▼
+                                               Formulario de finalización
+                                                 · curso, grupo, fecha, su nombre
+                                                 · gerencia ◄── directorio activo (bloqueada)
+                                                 · ★ satisfacción  (anónima)
+                                                 · ★ utilidad      (anónima)
+                                                          │ Enviar
+                                                          ▼
+                                               Un solo SaveChanges:
+                                                 1. INSERT course_assignment_completion
+                                                    (assignment_user_id, gerencia, fecha)
+                                                 2. INSERT course_rating (sin persona)
+          │                                               │
+          ▼                                               ▼
+ Listado → "Grupos asignados":                   "Mis cursos": Finalizado
+ cada grupo + fecha, sus integrantes con
+ estado y gerencia, promedios anónimos (≥ 3)
 ```
 
 ---
@@ -80,16 +88,15 @@ Cada asignación tiene su **formulario de finalización**, que diligencia la pro
 ## 3. 📁 Archivos
 
 ```text
-DOCCB.Domain/
-├── Enum/CourseCompletionStatus.cs                    nuevo
-└── Entities/
-    ├── CourseAssignment.cs                           ✏️ ahora apunta a un grupo
-    ├── CourseAssignmentUser.cs                       ✏️ ahora lleva estado, gerencia y fecha
-    └── CourseRating.cs                               nuevo — sin usuario
+DOCCB.Domain/Entities/
+├── CourseAssignment.cs                               ✏️ user_group_id y auditoría
+├── CourseAssignmentUser.cs                           ✏️ + navegación a la finalización
+├── CourseAssignmentCompletion.cs                     nuevo — el formulario diligenciado
+└── CourseRating.cs                                   nuevo — calificación anónima
 
 DOCCB.Application/
 ├── Contracts/Persistence/
-│   ├── ICourseRepository.cs                          ✏️ grupos y correos del curso
+│   ├── ICourseRepository.cs                          ✏️ foto de grupos
 │   └── ICourseCompletionRepository.cs                nuevo
 ├── Features/Courses/Application/
 │   ├── Constants/
@@ -101,33 +108,36 @@ DOCCB.Application/
 │   │   ├── CurrentUserIdentity.cs                    nuevo
 │   │   ├── CompletionDtos.cs                         nuevo
 │   │   └── CourseProgressDtos.cs                     nuevo
-│   ├── Helpers/CourseValidationHelper.cs             ✏️ valida grupos en vez de usuarios
+│   ├── Helpers/
+│   │   ├── CourseValidationHelper.cs                 ✏️ valida grupo + fecha
+│   │   └── RatingSummaryBuilder.cs                   nuevo — promedios con la regla de anonimato
 │   ├── Interfaces/
-│   │   ├── ICourseService.cs                         ✏️ + actualizar desde el grupo
+│   │   ├── ICourseService.cs                         ✏️
 │   │   ├── ICourseCompletionService.cs               nuevo
-│   │   └── IManagementDirectory.cs                   nuevo — gerencia del directorio activo
+│   │   └── IManagementDirectory.cs                   nuevo
 │   └── Services/
 │       ├── CourseService.cs                          ✏️ genera la relación desde los grupos
-│       ├── CourseCompletionService.cs                ⭐ formulario, mis cursos y seguimiento
-│       └── ManagementDirectory.cs                    nuevo — adapta tu método existente
+│       ├── CourseCompletionService.cs                ⭐ mis cursos, formulario, grupos asignados
+│       └── ManagementDirectory.cs                    nuevo — adapta tu método de gerencia
 
 DOCCB.Infraestructure/
 ├── Common/GenericRepositoryBase.cs                   (existente) base de CourseCompletionRepository
 ├── Configurations/
 │   ├── CourseAssignmentConfiguration.cs              ✏️
 │   ├── CourseAssignmentUserConfiguration.cs          ✏️
+│   ├── CourseAssignmentCompletionConfiguration.cs    nuevo
 │   └── CourseRatingConfiguration.cs                  nuevo
 ├── Persistence/
-│   ├── Models/DOCCbDbContext.cs                      ✏️ + CourseRatingConfiguration
-│   └── Scripts SQL/Cursos-v2.sql                     ⭐ tablas nuevas y reemplazo de las anteriores
+│   ├── Models/DOCCbDbContext.cs                      ✏️ + 2 configuraciones
+│   └── Scripts SQL/CursosFinalizacion.sql            ⭐ ajusta tus tablas y crea las nuevas
 └── Repositories/
     ├── CourseRepository.cs                           ✏️
     └── CourseCompletionRepository.cs                 nuevo — hereda de GenericRepositoryBase
 
-WebApp/
+Presentation/WebApp/
 ├── Common/Helper/ControllerExtensions.cs             ✏️ + identidad del usuario
 └── Controllers/
-    ├── CoursesController.cs                          ✏️ + sincronizar y seguimiento
+    ├── CoursesController.cs                          ✏️ + grupos asignados e integrantes
     └── MyCoursesController.cs                        nuevo — /api/my-courses
 ```
 
@@ -138,27 +148,65 @@ WebApp/
 ### Modelo
 
 ```text
-dbo.course ──< dbo.course_assignment >── dbo.user_group ──< dbo.user_group_member
-   │              id, due_date                                     │ (foto al asignar)
-   │                   │                                           ▼
-   │                   └──────────────< dbo.course_assignment_user
-   │                                     email, user_id?, entra_object_id?
-   │                                     status  PENDING | COMPLETED
-   │                                     completed_date, management_name
-   │
-   └──────────────────────────────────< dbo.course_rating        ← SIN usuario ni asignación
-                                          satisfaction 0-5, usefulness 0-5, created_date (DATE)
+dbo.user_group ──< dbo.user_group_member (user_id NULL = solo directorio)
+      │
+      │ user_group_id
+      ▼
+dbo.course ──< dbo.course_assignment ──< dbo.course_assignment_user >── dbo.users
+                 id, user_group_id,         id, assignment_id, user_id
+                 due_date                          │
+                    │                              │ 1 : 0..1
+                    │                              ▼
+                    │                   dbo.course_assignment_completion   ← el formulario
+                    │                     assignment_user_id (único)
+                    │                     management_name, created_date
+                    │
+                    └──────────────────< dbo.course_rating                 ← SIN persona
+                                          course_id, assignment_id
+                                          satisfaction 0-5, usefulness 0-5
+                                          created_date (DATE)
 ```
 
-### `Persistence/Scripts SQL/Cursos-v2.sql`
+| Tabla | Estado | Qué guarda |
+|---|---|---|
+| `dbo.course` | Sin cambios | `id`, `name`, `modality`, `external_id`, `removed`, `created_date`, `created_by`, `updated_date`, `updated_by` |
+| `dbo.course_assignment` | ✏️ índices | `id`, `course_id`, `user_group_id`, `due_date`, `created_date`, `created_by`, `updated_date`, `updated_by` |
+| `dbo.course_assignment_user` | ✏️ índices | `id`, `assignment_id`, `user_id`, `created_date` |
+| `dbo.course_assignment_completion` | **nueva** | `id`, `assignment_user_id`, `management_name`, `created_date` |
+| `dbo.course_rating` | **nueva** | `id`, `course_id`, `assignment_id`, `satisfaction`, `usefulness`, `created_date` |
+| `dbo.user_group`, `user_group_manager`, `user_group_member` | Sin cambios | Ver [grupos-usuarios-api-sqlserver.md](grupos-usuarios-api-sqlserver.md) |
 
-Reemplaza las tablas `course_assignment` y `course_assignment_user` de la guía anterior. **Si ya tienen datos, el script se detiene** sin tocar nada.
+### Antes de ejecutar: confirma tus columnas
+
+```sql
+SELECT  TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+FROM    INFORMATION_SCHEMA.COLUMNS
+WHERE   TABLE_SCHEMA = 'dbo'
+  AND   TABLE_NAME IN ('course_assignment', 'course_assignment_user')
+ORDER BY TABLE_NAME, ORDINAL_POSITION;
+
+-- Índices actuales de course_assignment_user
+SELECT  i.name, i.is_unique, i.is_primary_key,
+        columns = STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal)
+FROM    sys.indexes i
+JOIN    sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.key_ordinal > 0
+JOIN    sys.columns c        ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+WHERE   i.object_id = OBJECT_ID(N'dbo.course_assignment_user')
+GROUP BY i.name, i.is_unique, i.is_primary_key;
+```
+
+> **Si `course_assignment_user` todavía tiene `course_id`** (venía en la primera guía), mapéalo también en la entidad y en la configuración (sección 6) y llénalo al crear cada fila. Si no lo tiene, no hace falta: el curso se obtiene por la asignación.
+
+### `Persistence/Scripts SQL/CursosFinalizacion.sql`
+
+El script **no recrea** tus tablas: ajusta sus índices y crea las dos nuevas. Se puede ejecutar varias veces.
 
 ```sql
 /* =====================================================================
-   Cursos v2 — asignación por grupos, finalización y calificaciones
+   Cursos por grupos · formulario de finalización · calificaciones
    Base de datos: DB · Esquema: dbo
-   Requiere: dbo.course (Cursos.sql) y dbo.user_group (UserGroups.sql)
+   Requiere: dbo.course, dbo.course_assignment, dbo.course_assignment_user,
+             dbo.user_group, dbo.users
    ===================================================================== */
 USE [DB];
 GO
@@ -168,136 +216,146 @@ SET QUOTED_IDENTIFIER ON;
 GO
 
 /* ─────────────────────────────────────────────────────────────────────
-   0. Tablas del modelo anterior (asignación persona por persona)
-      Se reemplazan solo si están vacías.
+   0. Verificaciones: si falta algo, el script se detiene sin cambiar nada.
    ───────────────────────────────────────────────────────────────────── */
-IF OBJECT_ID(N'dbo.course_assignment', N'U') IS NOT NULL
-   AND COL_LENGTH(N'dbo.course_assignment', N'group_id') IS NULL
+IF COL_LENGTH(N'dbo.course_assignment', N'user_group_id') IS NULL
 BEGIN
-    IF EXISTS (SELECT 1 FROM dbo.course_assignment)
-    BEGIN
-        RAISERROR (N'dbo.course_assignment tiene datos del modelo anterior. Respáldalos o migra antes de continuar.', 16, 1);
-        SET NOEXEC ON; -- no ejecuta nada más de este script
-    END
-    ELSE
-    BEGIN
-        DROP TABLE IF EXISTS dbo.course_assignment_user;
-        DROP TABLE dbo.course_assignment;
-    END
+    RAISERROR (N'dbo.course_assignment no tiene la columna user_group_id.', 16, 1);
+    SET NOEXEC ON;
+END;
+
+IF COL_LENGTH(N'dbo.course_assignment_user', N'id') IS NULL
+BEGIN
+    RAISERROR (N'dbo.course_assignment_user no tiene la columna id.', 16, 1);
+    SET NOEXEC ON;
+END;
+
+-- El mismo grupo con la misma fecha dos veces en un curso impide crear el índice del paso 1.
+IF EXISTS (
+    SELECT 1 FROM dbo.course_assignment
+    GROUP BY course_id, user_group_id, due_date
+    HAVING COUNT(*) > 1)
+BEGIN
+    RAISERROR (N'Hay asignaciones repetidas (curso, grupo, fecha). Revísalas con la consulta de la guía.', 16, 1);
+    SET NOEXEC ON;
+END;
+
+-- Una persona repetida en la misma asignación impide crear el índice del paso 2.
+IF EXISTS (
+    SELECT 1 FROM dbo.course_assignment_user
+    GROUP BY assignment_id, user_id
+    HAVING COUNT(*) > 1)
+BEGIN
+    RAISERROR (N'Hay personas repetidas en una misma asignación. Revísalas con la consulta de la guía.', 16, 1);
+    SET NOEXEC ON;
 END;
 GO
 
 /* ─────────────────────────────────────────────────────────────────────
-   1. dbo.course_assignment — un grupo asignado a un curso, con su fecha límite
+   1. dbo.course_assignment
    ───────────────────────────────────────────────────────────────────── */
-IF OBJECT_ID(N'dbo.course_assignment', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.course_assignment
-    (
-        id           INT            IDENTITY(1, 1) NOT NULL,
-        course_id    INT            NOT NULL,
-        group_id     INT            NOT NULL,
-        due_date     DATE           NOT NULL,
-        removed      BIT            NOT NULL CONSTRAINT df_course_assignment_removed DEFAULT (0),
-        created_date DATETIME2(0)   NOT NULL CONSTRAINT df_course_assignment_created_date DEFAULT (SYSUTCDATETIME()),
-        created_by   NVARCHAR(150)  NOT NULL,
-        updated_date DATETIME2(0)   NULL,
-        updated_by   NVARCHAR(150)  NULL,
+-- Llave al grupo.
+IF OBJECT_ID(N'dbo.fk_course_assignment_user_group', N'F') IS NULL
+    ALTER TABLE dbo.course_assignment
+        ADD CONSTRAINT fk_course_assignment_user_group
+        FOREIGN KEY (user_group_id) REFERENCES dbo.user_group (id);
 
-        CONSTRAINT pk_course_assignment PRIMARY KEY CLUSTERED (id),
-        -- (id, course_id) permite que la tabla de personas garantice que la asignación es de ese curso.
-        CONSTRAINT uq_course_assignment_id_course_id UNIQUE (id, course_id),
-        CONSTRAINT fk_course_assignment_course FOREIGN KEY (course_id) REFERENCES dbo.course (id),
-        CONSTRAINT fk_course_assignment_group FOREIGN KEY (group_id) REFERENCES dbo.user_group (id)
+-- El mismo grupo puede repetirse en un curso, pero no con la misma fecha.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.course_assignment') AND name = N'ux_course_assignment_course_group_due')
+    CREATE UNIQUE INDEX ux_course_assignment_course_group_due
+        ON dbo.course_assignment (course_id, user_group_id, due_date);
+
+-- (id, course_id): permite que course_rating garantice que la asignación es de ese curso.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.course_assignment') AND name = N'uq_course_assignment_id_course_id')
+    ALTER TABLE dbo.course_assignment
+        ADD CONSTRAINT uq_course_assignment_id_course_id UNIQUE (id, course_id);
+GO
+
+/* ─────────────────────────────────────────────────────────────────────
+   2. dbo.course_assignment_user
+   ───────────────────────────────────────────────────────────────────── */
+-- La primera guía permitía una persona una sola vez por curso. Ahora puede estar
+-- en varias asignaciones del mismo curso (una por formulario).
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.course_assignment_user') AND name = N'ux_course_assignment_user_course_user')
+    DROP INDEX ux_course_assignment_user_course_user ON dbo.course_assignment_user;
+
+-- Una persona una sola vez por asignación.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.course_assignment_user') AND name = N'ux_course_assignment_user_assignment_user')
+    CREATE UNIQUE INDEX ux_course_assignment_user_assignment_user
+        ON dbo.course_assignment_user (assignment_id, user_id);
+
+-- "Mis cursos": todas las asignaciones de una persona.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'dbo.course_assignment_user') AND name = N'ix_course_assignment_user_user_id')
+    CREATE INDEX ix_course_assignment_user_user_id
+        ON dbo.course_assignment_user (user_id)
+        INCLUDE (assignment_id);
+
+-- La finalización apunta a id: tiene que ser único. Si ya es la llave primaria, no se crea nada.
+IF NOT EXISTS (
+    SELECT 1
+    FROM   sys.indexes i
+    WHERE  i.object_id = OBJECT_ID(N'dbo.course_assignment_user')
+      AND  i.is_unique = 1
+      AND  (SELECT COUNT(*) FROM sys.index_columns ic
+            WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.key_ordinal > 0) = 1
+      AND  EXISTS (SELECT 1 FROM sys.index_columns ic
+                   JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                   WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id
+                     AND ic.key_ordinal = 1 AND c.name = N'id'))
+    CREATE UNIQUE INDEX ux_course_assignment_user_id ON dbo.course_assignment_user (id);
+GO
+
+/* ─────────────────────────────────────────────────────────────────────
+   3. dbo.course_assignment_completion — el formulario diligenciado
+      Una fila por persona y asignación. Sin fila = Pendiente.
+   ───────────────────────────────────────────────────────────────────── */
+IF OBJECT_ID(N'dbo.course_assignment_completion', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.course_assignment_completion
+    (
+        id                 INT            IDENTITY(1, 1) NOT NULL,
+        assignment_user_id INT            NOT NULL,
+        management_name    NVARCHAR(200)  NULL,          -- gerencia del directorio activo al finalizar
+        created_date       DATETIME2(0)   NOT NULL
+            CONSTRAINT df_course_assignment_completion_created_date DEFAULT (SYSUTCDATETIME()),
+
+        CONSTRAINT pk_course_assignment_completion PRIMARY KEY CLUSTERED (id),
+        -- Sin cascada: no se puede borrar a una persona (ni su asignación) si ya diligenció el formulario.
+        CONSTRAINT fk_course_assignment_completion_assignment_user
+            FOREIGN KEY (assignment_user_id) REFERENCES dbo.course_assignment_user (id)
     );
 
-    -- Un grupo se asigna una sola vez al mismo curso (entre asignaciones activas).
-    CREATE UNIQUE INDEX ux_course_assignment_course_group
-        ON dbo.course_assignment (course_id, group_id)
-        WHERE removed = 0;
-
-    CREATE INDEX ix_course_assignment_course_id
-        ON dbo.course_assignment (course_id)
-        INCLUDE (due_date)
-        WHERE removed = 0;
+    -- Un formulario por persona y asignación: el doble envío choca aquí.
+    CREATE UNIQUE INDEX ux_course_assignment_completion_assignment_user
+        ON dbo.course_assignment_completion (assignment_user_id)
+        INCLUDE (created_date);
 END;
 GO
 
 /* ─────────────────────────────────────────────────────────────────────
-   2. dbo.course_assignment_user — la relación generada: cada persona con su estado
-   ───────────────────────────────────────────────────────────────────── */
-IF OBJECT_ID(N'dbo.course_assignment_user', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.course_assignment_user
-    (
-        id              INT              IDENTITY(1, 1) NOT NULL,
-        assignment_id   INT              NOT NULL,
-        course_id       INT              NOT NULL,
-        email           NVARCHAR(256)    NOT NULL,
-        display_name    NVARCHAR(256)    NOT NULL,
-        user_id         INT              NULL,
-        entra_object_id UNIQUEIDENTIFIER NULL,
-        status          VARCHAR(20)      NOT NULL CONSTRAINT df_course_assignment_user_status DEFAULT ('PENDING'),
-        completed_date  DATETIME2(0)     NULL,
-        management_name NVARCHAR(200)    NULL,
-        created_date    DATETIME2(0)     NOT NULL CONSTRAINT df_course_assignment_user_created_date DEFAULT (SYSUTCDATETIME()),
-
-        CONSTRAINT pk_course_assignment_user PRIMARY KEY CLUSTERED (id),
-        CONSTRAINT fk_course_assignment_user_assignment
-            FOREIGN KEY (assignment_id, course_id)
-            REFERENCES dbo.course_assignment (id, course_id)
-            ON DELETE CASCADE,
-        CONSTRAINT fk_course_assignment_user_user
-            FOREIGN KEY (user_id) REFERENCES dbo.users (id),
-        CONSTRAINT ck_course_assignment_user_identity CHECK (user_id IS NOT NULL OR entra_object_id IS NOT NULL),
-        CONSTRAINT ck_course_assignment_user_status CHECK (status IN ('PENDING', 'COMPLETED')),
-        -- Finalizado siempre tiene fecha; pendiente nunca.
-        CONSTRAINT ck_course_assignment_user_completed CHECK (
-            (status = 'PENDING' AND completed_date IS NULL) OR
-            (status = 'COMPLETED' AND completed_date IS NOT NULL))
-    );
-
-    -- Una persona, una asignación por curso: si está en dos grupos, queda en el primero.
-    CREATE UNIQUE INDEX ux_course_assignment_user_course_email
-        ON dbo.course_assignment_user (course_id, email);
-
-    -- Seguimiento por grupo y estado.
-    CREATE INDEX ix_course_assignment_user_assignment
-        ON dbo.course_assignment_user (assignment_id, status);
-
-    -- "Mis cursos".
-    CREATE INDEX ix_course_assignment_user_email
-        ON dbo.course_assignment_user (email)
-        INCLUDE (status);
-
-    CREATE INDEX ix_course_assignment_user_entra_object_id
-        ON dbo.course_assignment_user (entra_object_id)
-        WHERE entra_object_id IS NOT NULL;
-END;
-GO
-
-/* ─────────────────────────────────────────────────────────────────────
-   3. dbo.course_rating — calificaciones ANÓNIMAS del curso
-      Sin llave al usuario ni a la asignación. Id aleatorio. Fecha sin hora.
+   4. dbo.course_rating — calificaciones ANÓNIMAS
+      Sin persona ni course_assignment_user. Id aleatorio. Fecha sin hora.
    ───────────────────────────────────────────────────────────────────── */
 IF OBJECT_ID(N'dbo.course_rating', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.course_rating
     (
-        id           UNIQUEIDENTIFIER NOT NULL CONSTRAINT df_course_rating_id DEFAULT (NEWID()),
-        course_id    INT              NOT NULL,
-        satisfaction TINYINT          NOT NULL,
-        usefulness   TINYINT          NOT NULL,
-        created_date DATE             NOT NULL,
+        id            UNIQUEIDENTIFIER NOT NULL CONSTRAINT df_course_rating_id DEFAULT (NEWID()),
+        course_id     INT              NOT NULL,
+        assignment_id INT              NOT NULL,
+        satisfaction  TINYINT          NOT NULL,
+        usefulness    TINYINT          NOT NULL,
+        created_date  DATE             NOT NULL,
 
         CONSTRAINT pk_course_rating PRIMARY KEY NONCLUSTERED (id),
-        CONSTRAINT fk_course_rating_course FOREIGN KEY (course_id) REFERENCES dbo.course (id),
+        CONSTRAINT fk_course_rating_assignment
+            FOREIGN KEY (assignment_id, course_id) REFERENCES dbo.course_assignment (id, course_id),
         CONSTRAINT ck_course_rating_satisfaction CHECK (satisfaction BETWEEN 0 AND 5),
         CONSTRAINT ck_course_rating_usefulness CHECK (usefulness BETWEEN 0 AND 5)
     );
 
     CREATE CLUSTERED INDEX cx_course_rating_course
-        ON dbo.course_rating (course_id, created_date);
+        ON dbo.course_rating (course_id, assignment_id, created_date);
 END;
 GO
 
@@ -305,78 +363,79 @@ SET NOEXEC OFF;
 GO
 ```
 
-> **Anonimato más fuerte (opcional).** Si en la revisión de seguridad piden que ni un administrador de base de datos pueda cruzar fechas, cambia `created_date` por el **primer día del mes** (`DATEFROMPARTS(YEAR(x), MONTH(x), 1)`) al guardar. El requisito de "guardar la fecha del registro" se sigue cumpliendo, con menos detalle.
+Si el paso 0 se detiene por repetidos, estas consultas los muestran:
+
+```sql
+SELECT course_id, user_group_id, due_date, COUNT(*) AS total
+FROM   dbo.course_assignment
+GROUP BY course_id, user_group_id, due_date
+HAVING COUNT(*) > 1;
+
+SELECT assignment_id, user_id, COUNT(*) AS total
+FROM   dbo.course_assignment_user
+GROUP BY assignment_id, user_id
+HAVING COUNT(*) > 1;
+```
+
+> **Anonimato más fuerte (opcional).** Si piden que ni un administrador de base de datos pueda cruzar fechas, guarda en `course_rating.created_date` el **primer día del mes**. El requisito de "guardar la fecha del registro" se sigue cumpliendo, con menos detalle.
 
 ### Consultas de verificación
 
 ```sql
 DECLARE @today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'SA Pacific Standard Time' AS DATE);
 
--- Avance por curso y grupo
+-- Grupos asignados a cada curso, con su avance
 SELECT  c.name AS course,
         g.name AS user_group,
         a.due_date,
-        total     = COUNT(u.id),
-        completed = SUM(CASE WHEN u.status = 'COMPLETED' THEN 1 ELSE 0 END),
-        overdue   = SUM(CASE WHEN u.status = 'PENDING' AND a.due_date < @today THEN 1 ELSE 0 END)
+        total     = COUNT(au.id),
+        completed = COUNT(f.id),
+        overdue   = CASE WHEN a.due_date < @today THEN COUNT(au.id) - COUNT(f.id) ELSE 0 END
 FROM    dbo.course_assignment a
 JOIN    dbo.course c ON c.id = a.course_id AND c.removed = 0
-JOIN    dbo.user_group g ON g.id = a.group_id
-LEFT JOIN dbo.course_assignment_user u ON u.assignment_id = a.id
-WHERE   a.removed = 0
-GROUP BY c.name, g.name, a.due_date
+JOIN    dbo.user_group g ON g.id = a.user_group_id
+LEFT JOIN dbo.course_assignment_user au ON au.assignment_id = a.id
+LEFT JOIN dbo.course_assignment_completion f ON f.assignment_user_id = au.id
+GROUP BY c.name, g.name, a.id, a.due_date
 ORDER BY c.name, a.due_date;
 
--- Calificaciones por curso (el reporte solo las muestra con 3 respuestas o más)
-SELECT  c.name,
-        responses    = COUNT(*),
-        satisfaction = AVG(CAST(r.satisfaction AS DECIMAL(3, 2))),
-        usefulness   = AVG(CAST(r.usefulness AS DECIMAL(3, 2)))
-FROM    dbo.course_rating r
-JOIN    dbo.course c ON c.id = r.course_id
-GROUP BY c.name;
+-- Integrantes de una asignación con su estado
+DECLARE @assignmentId INT = 1;
+SELECT  u.corporative_email,
+        status = CASE WHEN f.id IS NULL THEN 'PENDIENTE' ELSE 'FINALIZADO' END,
+        f.management_name,
+        f.created_date AS completed_date
+FROM    dbo.course_assignment_user au
+JOIN    dbo.users u ON u.id = au.user_id
+LEFT JOIN dbo.course_assignment_completion f ON f.assignment_user_id = au.id
+WHERE   au.assignment_id = @assignmentId;
 
--- Control de integridad: finalizados por curso = calificaciones por curso
-SELECT  c.name,
-        completed = (SELECT COUNT(*) FROM dbo.course_assignment_user u WHERE u.course_id = c.id AND u.status = 'COMPLETED'),
-        ratings   = (SELECT COUNT(*) FROM dbo.course_rating r WHERE r.course_id = c.id)
-FROM    dbo.course c
-WHERE   c.removed = 0;
+-- Integridad: en cada asignación, formularios = calificaciones
+SELECT  a.id,
+        completions = (SELECT COUNT(*) FROM dbo.course_assignment_user au
+                       JOIN dbo.course_assignment_completion f ON f.assignment_user_id = au.id
+                       WHERE au.assignment_id = a.id),
+        ratings     = (SELECT COUNT(*) FROM dbo.course_rating r WHERE r.assignment_id = a.id)
+FROM    dbo.course_assignment a;
 ```
 
-La última consulta debe dar siempre el mismo número en las dos columnas: cada finalización genera exactamente una calificación.
+La última consulta debe dar el mismo número en las dos columnas: cada formulario genera exactamente una calificación.
 
 ---
 
 ## 5. Paso 2 — Dominio
 
-### `DOCCB.Domain/Enum/CourseCompletionStatus.cs`
-
-```csharp
-namespace DOCCB.Domain.Enum;
-
-public enum CourseCompletionStatus
-{
-    /// <summary>Estado normal al asignar el curso.</summary>
-    Pending = 1,
-
-    /// <summary>La persona diligenció el formulario de finalización.</summary>
-    Completed = 2
-}
-```
-
-### `DOCCB.Domain/Entities/CourseAssignment.cs` ✏️
+### `Entities/CourseAssignment.cs` ✏️
 
 ```csharp
 namespace DOCCB.Domain.Entities;
 
-/// <summary>Un grupo de usuarios asignado a un curso, con su fecha límite.</summary>
+/// <summary>Un grupo asignado a un curso con una fecha de finalización. El mismo grupo puede repetirse con otra fecha.</summary>
 public class CourseAssignment : BaseEntity
 {
     public int CourseId { get; set; }
-    public int GroupId { get; set; }
+    public int UserGroupId { get; set; }
     public DateOnly DueDate { get; set; }
-    public bool Removed { get; set; }
 
     public DateTime CreatedDate { get; set; }
     public string CreatedBy { get; set; } = string.Empty;
@@ -384,55 +443,65 @@ public class CourseAssignment : BaseEntity
     public string? UpdatedBy { get; set; }
 
     public Course Course { get; set; } = null!;
-    public UserGroup Group { get; set; } = null!;
+    public UserGroup UserGroup { get; set; } = null!;
     public ICollection<CourseAssignmentUser> Users { get; set; } = new List<CourseAssignmentUser>();
 }
 ```
 
-### `DOCCB.Domain/Entities/CourseAssignmentUser.cs` ✏️
+### `Entities/CourseAssignmentUser.cs` ✏️
 
 ```csharp
-using DOCCB.Domain.Enum;
-
 namespace DOCCB.Domain.Entities;
 
-/// <summary>Una persona asignada a un curso por un grupo, con el estado de su formulario.</summary>
+/// <summary>Una persona en una asignación. Sin Completion = Pendiente.</summary>
 public class CourseAssignmentUser : BaseEntity
 {
     public int AssignmentId { get; set; }
-    public int CourseId { get; set; }
+    public int UserId { get; set; }
+    public DateTime CreatedDate { get; set; }
 
-    public string Email { get; set; } = string.Empty;
-    public string DisplayName { get; set; } = string.Empty;
-    public int? UserId { get; set; }
-    public Guid? EntraObjectId { get; set; }
+    public CourseAssignment Assignment { get; set; } = null!;
+    public User User { get; set; } = null!;
 
-    public CourseCompletionStatus Status { get; set; } = CourseCompletionStatus.Pending;
-    public DateTime? CompletedDate { get; set; }
+    /// <summary>El formulario diligenciado. null mientras esté pendiente.</summary>
+    public CourseAssignmentCompletion? Completion { get; set; }
+}
+```
+
+### `Entities/CourseAssignmentCompletion.cs`
+
+```csharp
+namespace DOCCB.Domain.Entities;
+
+/// <summary>Formulario de finalización de una persona en una asignación. Sin calificaciones: esas son anónimas.</summary>
+public class CourseAssignmentCompletion : BaseEntity
+{
+    public int AssignmentUserId { get; set; }
 
     /// <summary>Gerencia del directorio activo al momento de finalizar.</summary>
     public string? ManagementName { get; set; }
 
+    /// <summary>Fecha del registro: es la fecha de finalización. La pone el servidor.</summary>
     public DateTime CreatedDate { get; set; }
 
-    public CourseAssignment Assignment { get; set; } = null!;
-    public User? User { get; set; }
+    public CourseAssignmentUser AssignmentUser { get; set; } = null!;
 }
 ```
 
-### `DOCCB.Domain/Entities/CourseRating.cs`
+### `Entities/CourseRating.cs`
 
 ```csharp
 namespace DOCCB.Domain.Entities;
 
 /// <summary>
-/// Calificación ANÓNIMA de un curso. A propósito no tiene navegación ni llave
-/// hacia el usuario ni hacia la asignación: no agregues ninguna.
+/// Calificación ANÓNIMA. A propósito no tiene llave ni navegación hacia la persona
+/// ni hacia course_assignment_user: no agregues ninguna.
 /// </summary>
 public class CourseRating
 {
     public Guid Id { get; set; }
     public int CourseId { get; set; }
+    public int AssignmentId { get; set; }
     public byte Satisfaction { get; set; }
     public byte Usefulness { get; set; }
 
@@ -440,6 +509,8 @@ public class CourseRating
     public DateOnly CreatedDate { get; set; }
 }
 ```
+
+> `BaseEntity` es la base que ya usan tus entidades (aporta `Id`). `CourseRating` no la usa porque su id es un `Guid`.
 
 ---
 
@@ -454,10 +525,11 @@ public static class CourseIndexNames
 {
     public const string NameModality = "ux_course_name_modality";
     public const string ExternalId = "ux_course_external_id";
-    public const string CourseGroup = "ux_course_assignment_course_group";
-    public const string CourseUser = "ux_course_assignment_user_course_email";
+    public const string AssignmentGroupDue = "ux_course_assignment_course_group_due";
+    public const string AssignmentUser = "ux_course_assignment_user_assignment_user";
+    public const string Completion = "ux_course_assignment_completion_assignment_user";
 
-    public static readonly string[] All = [NameModality, ExternalId, CourseGroup, CourseUser];
+    public static readonly string[] All = [NameModality, ExternalId, AssignmentGroupDue, AssignmentUser, Completion];
 }
 ```
 
@@ -482,24 +554,24 @@ public class CourseAssignmentConfiguration : IEntityTypeConfiguration<CourseAssi
 
         builder.Property(a => a.Id).HasColumnName("id");
         builder.Property(a => a.CourseId).HasColumnName("course_id");
-        builder.Property(a => a.GroupId).HasColumnName("group_id");
+        builder.Property(a => a.UserGroupId).HasColumnName("user_group_id");
         builder.Property(a => a.DueDate).HasColumnName("due_date").HasColumnType("date");
-        builder.Property(a => a.Removed).HasColumnName("removed");
         builder.Property(a => a.CreatedDate).HasColumnName("created_date").HasColumnType("datetime2(0)");
         builder.Property(a => a.CreatedBy).HasColumnName("created_by").HasMaxLength(150).IsRequired();
         builder.Property(a => a.UpdatedDate).HasColumnName("updated_date").HasColumnType("datetime2(0)");
         builder.Property(a => a.UpdatedBy).HasColumnName("updated_by").HasMaxLength(150);
 
-        builder.HasIndex(a => new { a.CourseId, a.GroupId })
+        builder.HasIndex(a => new { a.CourseId, a.UserGroupId, a.DueDate })
             .IsUnique()
-            .HasFilter("[removed] = 0")
-            .HasDatabaseName(CourseIndexNames.CourseGroup);
+            .HasDatabaseName(CourseIndexNames.AssignmentGroupDue);
 
-        builder.HasOne(a => a.Group)
+        builder.HasOne(a => a.UserGroup)
             .WithMany()
-            .HasForeignKey(a => a.GroupId)
-            .HasConstraintName("fk_course_assignment_group")
+            .HasForeignKey(a => a.UserGroupId)
+            .HasConstraintName("fk_course_assignment_user_group")
             .OnDelete(DeleteBehavior.Restrict);
+
+        // La relación con Course (Course.Assignments) ya está en CourseConfiguration.
     }
 }
 ```
@@ -509,7 +581,6 @@ public class CourseAssignmentConfiguration : IEntityTypeConfiguration<CourseAssi
 ```csharp
 using DOCCB.Application.Features.Courses.Application.Constants;
 using DOCCB.Domain.Entities;
-using DOCCB.Domain.Enum;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -519,55 +590,67 @@ public class CourseAssignmentUserConfiguration : IEntityTypeConfiguration<Course
 {
     public void Configure(EntityTypeBuilder<CourseAssignmentUser> builder)
     {
-        builder.ToTable("course_assignment_user", "dbo", table =>
-        {
-            table.HasCheckConstraint("ck_course_assignment_user_identity", "user_id IS NOT NULL OR entra_object_id IS NOT NULL");
-            table.HasCheckConstraint("ck_course_assignment_user_status", "status IN ('PENDING', 'COMPLETED')");
-            table.HasCheckConstraint("ck_course_assignment_user_completed",
-                "(status = 'PENDING' AND completed_date IS NULL) OR (status = 'COMPLETED' AND completed_date IS NOT NULL)");
-        });
+        builder.ToTable("course_assignment_user", "dbo");
 
-        builder.HasKey(u => u.Id).HasName("pk_course_assignment_user");
+        builder.HasKey(u => u.Id);
 
         builder.Property(u => u.Id).HasColumnName("id");
         builder.Property(u => u.AssignmentId).HasColumnName("assignment_id");
-        builder.Property(u => u.CourseId).HasColumnName("course_id");
-        builder.Property(u => u.Email).HasColumnName("email").HasMaxLength(256).IsRequired();
-        builder.Property(u => u.DisplayName).HasColumnName("display_name").HasMaxLength(256).IsRequired();
         builder.Property(u => u.UserId).HasColumnName("user_id");
-        builder.Property(u => u.EntraObjectId).HasColumnName("entra_object_id");
-        builder.Property(u => u.CompletedDate).HasColumnName("completed_date").HasColumnType("datetime2(0)");
-        builder.Property(u => u.ManagementName).HasColumnName("management_name").HasMaxLength(200);
         builder.Property(u => u.CreatedDate).HasColumnName("created_date").HasColumnType("datetime2(0)");
 
-        builder.Property(u => u.Status)
-            .HasColumnName("status")
-            .HasMaxLength(20)
-            .IsUnicode(false)
-            .HasConversion(
-                status => status.ToString().ToUpperInvariant(),
-                code => Enum.Parse<CourseCompletionStatus>(code, true));
-
-        // Tiene que estar en el modelo: EF lo usa para ordenar DELETE antes que INSERT
-        // cuando una persona pasa de un grupo a otro en el mismo guardado.
-        builder.HasIndex(u => new { u.CourseId, u.Email }).IsUnique().HasDatabaseName(CourseIndexNames.CourseUser);
-        builder.HasIndex(u => new { u.AssignmentId, u.Status }).HasDatabaseName("ix_course_assignment_user_assignment");
-        builder.HasIndex(u => u.Email).HasDatabaseName("ix_course_assignment_user_email");
-        builder.HasIndex(u => u.EntraObjectId)
-            .HasFilter("[entra_object_id] IS NOT NULL")
-            .HasDatabaseName("ix_course_assignment_user_entra_object_id");
+        builder.HasIndex(u => new { u.AssignmentId, u.UserId })
+            .IsUnique()
+            .HasDatabaseName(CourseIndexNames.AssignmentUser);
+        builder.HasIndex(u => u.UserId).HasDatabaseName("ix_course_assignment_user_user_id");
 
         builder.HasOne(u => u.Assignment)
             .WithMany(a => a.Users)
-            .HasForeignKey(u => new { u.AssignmentId, u.CourseId })
-            .HasPrincipalKey(a => new { a.Id, a.CourseId })
-            .HasConstraintName("fk_course_assignment_user_assignment")
+            .HasForeignKey(u => u.AssignmentId)
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne(u => u.User)
             .WithMany()
             .HasForeignKey(u => u.UserId)
-            .HasConstraintName("fk_course_assignment_user_user")
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+```
+
+> `HasKey(u => u.Id)` sin `HasName`: EF no crea la tabla (el script manda), así que no importa cómo se llame tu llave primaria. Si en tu tabla la llave es `(assignment_id, user_id)` y `id` es solo una identidad, igual funciona: el script crea el índice único sobre `id`.
+
+### `Configurations/CourseAssignmentCompletionConfiguration.cs`
+
+```csharp
+using DOCCB.Application.Features.Courses.Application.Constants;
+using DOCCB.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace DOCCB.Infraestructure.Configurations;
+
+public class CourseAssignmentCompletionConfiguration : IEntityTypeConfiguration<CourseAssignmentCompletion>
+{
+    public void Configure(EntityTypeBuilder<CourseAssignmentCompletion> builder)
+    {
+        builder.ToTable("course_assignment_completion", "dbo");
+
+        builder.HasKey(c => c.Id).HasName("pk_course_assignment_completion");
+
+        builder.Property(c => c.Id).HasColumnName("id");
+        builder.Property(c => c.AssignmentUserId).HasColumnName("assignment_user_id");
+        builder.Property(c => c.ManagementName).HasColumnName("management_name").HasMaxLength(200);
+        builder.Property(c => c.CreatedDate).HasColumnName("created_date").HasColumnType("datetime2(0)");
+
+        builder.HasIndex(c => c.AssignmentUserId)
+            .IsUnique()
+            .HasDatabaseName(CourseIndexNames.Completion);
+
+        // 1 : 0..1 y sin cascada: el historial de formularios no se borra por accidente.
+        builder.HasOne(c => c.AssignmentUser)
+            .WithOne(u => u.Completion)
+            .HasForeignKey<CourseAssignmentCompletion>(c => c.AssignmentUserId)
+            .HasConstraintName("fk_course_assignment_completion_assignment_user")
             .OnDelete(DeleteBehavior.Restrict);
     }
 }
@@ -596,36 +679,41 @@ public class CourseRatingConfiguration : IEntityTypeConfiguration<CourseRating>
 
         builder.Property(r => r.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(r => r.CourseId).HasColumnName("course_id");
+        builder.Property(r => r.AssignmentId).HasColumnName("assignment_id");
         builder.Property(r => r.Satisfaction).HasColumnName("satisfaction");
         builder.Property(r => r.Usefulness).HasColumnName("usefulness");
         builder.Property(r => r.CreatedDate).HasColumnName("created_date").HasColumnType("date");
 
-        builder.HasIndex(r => new { r.CourseId, r.CreatedDate }).IsClustered().HasDatabaseName("cx_course_rating_course");
+        builder.HasIndex(r => new { r.CourseId, r.AssignmentId, r.CreatedDate })
+            .IsClustered()
+            .HasDatabaseName("cx_course_rating_course");
 
-        // Solo hacia el curso. Sin navegación: nadie debería "llegar" a una calificación desde otra entidad.
-        builder.HasOne<Course>()
+        // Solo hacia la asignación (grupo + fecha). Sin navegación y nunca hacia la persona.
+        builder.HasOne<CourseAssignment>()
             .WithMany()
-            .HasForeignKey(r => r.CourseId)
-            .HasConstraintName("fk_course_rating_course")
+            .HasForeignKey(r => new { r.AssignmentId, r.CourseId })
+            .HasPrincipalKey(a => new { a.Id, a.CourseId })
+            .HasConstraintName("fk_course_rating_assignment")
             .OnDelete(DeleteBehavior.Restrict);
     }
 }
 ```
 
-### Registro en `DOCCbDbContext.cs`
+### Registro en `Persistence/Models/DOCCbDbContext.cs`
 
 ```csharp
-modelBuilder.ApplyConfiguration(new CourseRatingConfiguration()); // nueva
+modelBuilder.ApplyConfiguration(new CourseAssignmentCompletionConfiguration()); // nueva
+modelBuilder.ApplyConfiguration(new CourseRatingConfiguration());               // nueva
 // CourseAssignmentConfiguration y CourseAssignmentUserConfiguration ya estaban registradas.
 ```
 
 ---
 
-## 7. Paso 4 — Cambios en la asignación de cursos
+## 7. Paso 4 — Asignar grupos al curso
 
 ### DTOs ✏️
 
-En `SaveCourseRequestDto.cs`, la asignación ahora es un **grupo** con su fecha:
+`SaveCourseRequestDto.cs`: cada asignación es un **grupo con su fecha**.
 
 ```csharp
 public class SaveCourseAssignmentDto
@@ -636,24 +724,23 @@ public class SaveCourseAssignmentDto
     public DateOnly DueDate { get; set; }
 }
 
-/// <summary>Resultado de crear o actualizar: el frontend avisa si hubo personas en dos grupos.</summary>
 public class SaveCourseResultDto
 {
     public int CourseId { get; set; }
-    /// <summary>Personas que estaban en más de un grupo: quedaron asignadas por el primero.</summary>
-    public int OverlappingUsers { get; set; }
+
+    /// <summary>Integrantes de los grupos nuevos que no están en dbo.users: no se asignaron.</summary>
+    public int SkippedWithoutUser { get; set; }
 }
 
 public class SyncAssignmentResultDto
 {
     public int Added { get; set; }
     public int RemovedPending { get; set; }
-    /// <summary>Nuevos en el grupo que ya estaban en el curso por otro grupo.</summary>
-    public int SkippedInOtherGroups { get; set; }
+    public int SkippedWithoutUser { get; set; }
 }
 ```
 
-En `CourseDetailDtos.cs`, el detalle de cada asignación:
+`CourseDetailDtos.cs`: cada asignación del detalle.
 
 ```csharp
 public class CourseAssignmentDto
@@ -669,28 +756,37 @@ public class CourseAssignmentDto
 }
 ```
 
-`CourseUserDto` ya no se usa en el detalle del curso. `CourseListItemDto` y `CoursePageDto` no cambian.
+`CourseListItemDto` suma dos conteos para la tarjeta del curso:
+
+```csharp
+public int AssignedGroupsCount { get; set; }   // asignaciones (grupo + fecha)
+public int AssignedUsersCount { get; set; }    // ya existía: personas en todas las asignaciones
+public int CompletedUsersCount { get; set; }   // formularios diligenciados
+```
 
 ### `Constants/CourseConstants.cs` ✏️ — mensajes nuevos
 
 ```csharp
 public const string GroupRequired = "Elige el grupo.";
-public const string GroupRepeated = "Ese grupo ya está asignado a este curso.";
-public const string GroupChangeNotAllowed = "Para cambiar el grupo, quita la asignación y agrega el grupo nuevo.";
+public const string GroupDueRepeated = "Ese grupo ya está asignado con esa fecha de finalización.";
+public const string GroupChangeNotAllowed = "Una asignación guardada no cambia de grupo. Agrega una asignación nueva.";
 public const string GroupNotFound = "El grupo no existe o fue eliminado.";
 public const string AssignmentNotFound = "La asignación no existe en este curso.";
+
+public static string AssignmentHasCompletions(string groupName, DateOnly dueDate, int completed) =>
+    $"No se puede quitar {groupName} ({dueDate:dd/MM/yyyy}): {completed} " +
+    (completed == 1 ? "persona ya diligenció" : "personas ya diligenciaron") +
+    " el formulario. Puedes cambiar su fecha.";
 ```
 
 ### `Helpers/CourseValidationHelper.cs` ✏️
 
-`AssignmentDraft` cambia y el bloque de asignaciones de `Normalize` valida grupos en lugar de usuarios:
-
 ```csharp
 public sealed record AssignmentDraft(int? AssignmentId, int GroupId, DateOnly DueDate);
 
-// Dentro de Normalize, reemplaza el ciclo de asignaciones por:
+// Dentro de Normalize, el ciclo de asignaciones:
 var assignments = new List<AssignmentDraft>();
-var seenGroups = new HashSet<int>();
+var seenGroupDue = new HashSet<(int GroupId, DateOnly DueDate)>();
 var seenAssignments = new HashSet<int>();
 
 for (var i = 0; i < groups.Count; i++)
@@ -700,14 +796,15 @@ for (var i = 0; i < groups.Count; i++)
 
     if (group.GroupId <= 0)
         errors.Add($"{label}: {CourseConstants.GroupRequired}");
-    else if (!seenGroups.Add(group.GroupId))
-        errors.Add($"{label}: {CourseConstants.GroupRepeated}");
+
+    if (group.DueDate == default)
+        errors.Add($"{label}: elige la fecha de finalización.");
+    // El mismo grupo puede repetirse, pero no con la misma fecha.
+    else if (group.GroupId > 0 && !seenGroupDue.Add((group.GroupId, group.DueDate)))
+        errors.Add($"{label}: {CourseConstants.GroupDueRepeated}");
 
     if (group.AssignmentId is { } assignmentId && !seenAssignments.Add(assignmentId))
         errors.Add($"{label}: la asignación {assignmentId} viene repetida.");
-
-    if (group.DueDate == default)
-        errors.Add($"{label}: elige la fecha límite.");
 
     assignments.Add(new AssignmentDraft(group.AssignmentId, group.GroupId, group.DueDate));
 }
@@ -715,59 +812,53 @@ for (var i = 0; i < groups.Count; i++)
 
 ### `Contracts/Persistence/ICourseRepository.cs` ✏️
 
-Se agregan dos métodos y se quita `GetExistingUserIdsAsync`:
-
 ```csharp
-/// <summary>Integrantes de un grupo al momento de asignarlo.</summary>
-public sealed record GroupMemberSnapshot(string Email, string DisplayName, int? UserId, Guid? EntraObjectId);
-
-public sealed record GroupSnapshot(int GroupId, string Name, IReadOnlyList<GroupMemberSnapshot> Members);
+/// <summary>Integrantes de un grupo al asignarlo: los que tienen usuario y cuántos no.</summary>
+public sealed record GroupSnapshot(int GroupId, string Name, IReadOnlyList<int> UserIds, int WithoutUserCount);
 
 // En ICourseRepository:
 
-/// <summary>Grupos activos con sus integrantes. Los que no existan no vienen en el diccionario.</summary>
+/// <summary>Grupos activos. Los que no existan no vienen en el diccionario.</summary>
 Task<IReadOnlyDictionary<int, GroupSnapshot>> GetGroupSnapshotsAsync(IReadOnlyCollection<int> groupIds, CancellationToken ct);
 
-/// <summary>Correos que ya tienen fila en el curso (incluye finalizados de grupos retirados).</summary>
-Task<HashSet<string>> GetCourseEmailsAsync(int courseId, CancellationToken ct);
-
-/// <summary>¿El curso tuvo alguna asignación, activa o retirada? Decide entre borrado lógico y físico.</summary>
+/// <summary>¿El curso tuvo alguna asignación? Decide entre borrado lógico y físico.</summary>
 Task<bool> HasAssignmentHistoryAsync(int courseId, CancellationToken ct);
 ```
 
+Se quita `GetExistingUserIdsAsync` de la primera guía: las personas ahora salen del grupo.
+
 ### `Repositories/CourseRepository.cs` ✏️
 
-**Listado:** los conteos y la próxima fecha solo miran asignaciones activas. La tarjeta del curso muestra grupos, personas y cuántas finalizaron, así que se agregan dos conteos (`AssignedGroupsCount` y `CompletedUsersCount`) al DTO del listado y a la fila intermedia del repositorio, junto a `AssignedUsersCount`.
+**Listado:**
 
 ```csharp
-AssignedGroupsCount = c.Assignments.Count(a => !a.Removed),
-AssignedUsersCount = c.Assignments.Where(a => !a.Removed).SelectMany(a => a.Users).Count(),
-CompletedUsersCount = c.Assignments.Where(a => !a.Removed).SelectMany(a => a.Users)
-                          .Count(u => u.Status == CourseCompletionStatus.Completed),
-NextDueDate = c.Assignments.Where(a => !a.Removed && a.DueDate >= today).Min(a => (DateOnly?)a.DueDate)
-              ?? c.Assignments.Where(a => !a.Removed && a.DueDate < today).Max(a => (DateOnly?)a.DueDate),
+AssignedGroupsCount = c.Assignments.Count(),
+AssignedUsersCount = c.Assignments.SelectMany(a => a.Users).Count(),
+CompletedUsersCount = c.Assignments.SelectMany(a => a.Users).Count(u => u.Completion != null),
+NextDueDate = c.Assignments.Where(a => a.DueDate >= today).Min(a => (DateOnly?)a.DueDate)
+              ?? c.Assignments.Where(a => a.DueDate < today).Max(a => (DateOnly?)a.DueDate),
 ```
 
-**Detalle:** cada asignación con su grupo y su avance.
+**Detalle:**
 
 ```csharp
 Assignments = c.Assignments
-    .Where(a => !a.Removed)
     .OrderBy(a => a.DueDate)
+    .ThenBy(a => a.Id)
     .Select(a => new CourseAssignmentDto
     {
         AssignmentId = a.Id,
-        GroupId = a.GroupId,
-        GroupName = a.Group.Name,
-        GroupRemoved = a.Group.Removed,
+        GroupId = a.UserGroupId,
+        GroupName = a.UserGroup.Name,
+        GroupRemoved = a.UserGroup.Removed,
         DueDate = a.DueDate,
         TotalUsers = a.Users.Count(),
-        CompletedUsers = a.Users.Count(u => u.Status == CourseCompletionStatus.Completed),
+        CompletedUsers = a.Users.Count(u => u.Completion != null),
     })
     .ToList(),
 ```
 
-**Carga para editar:** solo asignaciones activas, con sus personas.
+**Carga para editar:** las asignaciones con sus personas y, de cada una, si ya finalizó.
 
 ```csharp
 public Task<Course?> GetForUpdateAsync(int courseId, bool includeAssignments, CancellationToken ct)
@@ -777,8 +868,8 @@ public Task<Course?> GetForUpdateAsync(int courseId, bool includeAssignments, Ca
     if (includeAssignments)
     {
         query = query
-            .Include(c => c.Assignments.Where(a => !a.Removed))
-            .ThenInclude(a => a.Users);
+            .Include(c => c.Assignments).ThenInclude(a => a.UserGroup)
+            .Include(c => c.Assignments).ThenInclude(a => a.Users).ThenInclude(u => u.Completion);
     }
 
     return query.AsSplitQuery().FirstOrDefaultAsync(ct);
@@ -793,42 +884,33 @@ public async Task<IReadOnlyDictionary<int, GroupSnapshot>> GetGroupSnapshotsAsyn
 {
     if (groupIds.Count == 0) return new Dictionary<int, GroupSnapshot>();
 
+    var ids = groupIds.Distinct().ToList();
+
     var groups = await db.Set<UserGroup>()
         .AsNoTracking()
-        .Where(g => groupIds.Contains(g.Id) && !g.Removed)
+        .Where(g => ids.Contains(g.Id) && !g.Removed)
         .Select(g => new
         {
             g.Id,
             g.Name,
-            Members = g.Members
-                .OrderBy(m => m.DisplayName)
-                .Select(m => new GroupMemberSnapshot(m.Email, m.DisplayName, m.UserId, m.EntraObjectId))
-                .ToList(),
+            UserIds = g.Members.Where(m => m.UserId != null).Select(m => m.UserId!.Value).Distinct().ToList(),
+            WithoutUser = g.Members.Count(m => m.UserId == null),
         })
         .AsSplitQuery()
         .ToListAsync(ct);
 
-    return groups.ToDictionary(g => g.Id, g => new GroupSnapshot(g.Id, g.Name, g.Members));
-}
-
-public async Task<HashSet<string>> GetCourseEmailsAsync(int courseId, CancellationToken ct)
-{
-    var emails = await db.Set<CourseAssignmentUser>()
-        .AsNoTracking()
-        .Where(u => u.CourseId == courseId)
-        .Select(u => u.Email)
-        .ToListAsync(ct);
-
-    return emails.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    return groups.ToDictionary(g => g.Id, g => new GroupSnapshot(g.Id, g.Name, g.UserIds, g.WithoutUser));
 }
 
 public Task<bool> HasAssignmentHistoryAsync(int courseId, CancellationToken ct) =>
     db.Set<CourseAssignment>().AnyAsync(a => a.CourseId == courseId, ct);
 ```
 
+> Si tu `CourseRepository` ya hereda de `GenericRepositoryBase`, cambia `db` por `_context`.
+
 ### `Services/CourseService.cs` ✏️
 
-Se reemplazan `CreateAsync`, `UpdateAsync`, `DeleteAsync` y `SyncAssignments`, y se agrega `SyncAssignmentAsync`. `FindMissingUsersAsync` y `NewAssignment` de la versión anterior se borran.
+Se reemplazan `CreateAsync`, `UpdateAsync` y `DeleteAsync`, y se agrega `SyncAssignmentAsync`.
 
 ```csharp
 public async Task<CourseResult<SaveCourseResultDto>> CreateAsync(
@@ -850,8 +932,7 @@ public async Task<CourseResult<SaveCourseResultDto>> CreateAsync(
     if (conflict is not null) return CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Conflict, conflict);
 
     var groups = await _repository.GetGroupSnapshotsAsync(draft.Assignments.Select(a => a.GroupId).ToList(), ct);
-    var missingGroups = draft.Assignments.Where(a => !groups.ContainsKey(a.GroupId)).ToList();
-    if (missingGroups.Count > 0)
+    if (draft.Assignments.Any(a => !groups.ContainsKey(a.GroupId)))
         return CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Invalid, CourseConstants.GroupNotFound);
 
     var now = Now();
@@ -864,22 +945,19 @@ public async Task<CourseResult<SaveCourseResultDto>> CreateAsync(
         CreatedBy = currentUser,
     };
 
-    var usedEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    var overlapping = 0;
-
-    // El orden de la lista define quién gana si una persona está en dos grupos: el primero.
+    var skipped = 0;
     foreach (var assignmentDraft in draft.Assignments)
     {
-        var (assignment, skipped) = NewAssignment(assignmentDraft, groups[assignmentDraft.GroupId], usedEmails, now, currentUser);
-        course.Assignments.Add(assignment);
-        overlapping += skipped;
+        var group = groups[assignmentDraft.GroupId];
+        course.Assignments.Add(NewAssignment(assignmentDraft, group, now, currentUser));
+        skipped += group.WithoutUserCount;
     }
 
     _repository.Add(course);
 
     var saveConflict = await TrySaveAsync(ct);
     return saveConflict is null
-        ? CourseResult<SaveCourseResultDto>.Ok(new SaveCourseResultDto { CourseId = course.Id, OverlappingUsers = overlapping })
+        ? CourseResult<SaveCourseResultDto>.Ok(new SaveCourseResultDto { CourseId = course.Id, SkippedWithoutUser = skipped })
         : CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Conflict, saveConflict);
 }
 
@@ -895,7 +973,7 @@ public async Task<CourseResult<SaveCourseResultDto>> UpdateAsync(
     var conflict = await CheckUniquenessAsync(draft.Name, course.Modality, draft.ExternalId, id, ct);
     if (conflict is not null) return CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Conflict, conflict);
 
-    // ── Validaciones que necesitan lo guardado ──────────────────────
+    // ── Validaciones contra lo guardado ─────────────────────────────
     var existing = course.Assignments.ToDictionary(a => a.Id);
     var today = Today();
 
@@ -906,7 +984,7 @@ public async Task<CourseResult<SaveCourseResultDto>> UpdateAsync(
             if (!existing.TryGetValue(assignmentId, out var current))
                 return CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Invalid, CourseConstants.AssignmentNotFound);
 
-            if (current.GroupId != assignmentDraft.GroupId)
+            if (current.UserGroupId != assignmentDraft.GroupId)
                 return CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Invalid, CourseConstants.GroupChangeNotAllowed);
 
             // Una fecha que no cambia se respeta aunque ya haya vencido.
@@ -918,6 +996,18 @@ public async Task<CourseResult<SaveCourseResultDto>> UpdateAsync(
             return CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Invalid, CourseConstants.PastDueDate);
         }
     }
+
+    // Asignaciones que ya no vienen: solo se pueden quitar si nadie diligenció el formulario.
+    var keepIds = draft.Assignments.Where(a => a.AssignmentId is not null).Select(a => a.AssignmentId!.Value).ToHashSet();
+    var removed = course.Assignments.Where(a => !keepIds.Contains(a.Id)).ToList();
+
+    var blocking = removed
+        .Select(a => new { Assignment = a, Completed = a.Users.Count(u => u.Completion is not null) })
+        .Where(x => x.Completed > 0)
+        .Select(x => CourseConstants.AssignmentHasCompletions(x.Assignment.UserGroup.Name, x.Assignment.DueDate, x.Completed))
+        .ToList();
+
+    if (blocking.Count > 0) return CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Conflict, blocking);
 
     var newDrafts = draft.Assignments.Where(a => a.AssignmentId is null).ToList();
     var groups = await _repository.GetGroupSnapshotsAsync(newDrafts.Select(a => a.GroupId).ToList(), ct);
@@ -931,16 +1021,14 @@ public async Task<CourseResult<SaveCourseResultDto>> UpdateAsync(
     course.UpdatedDate = now;
     course.UpdatedBy = currentUser;
 
-    var usedEmails = await _repository.GetCourseEmailsAsync(id, ct);
-    var keepIds = draft.Assignments.Where(a => a.AssignmentId is not null).Select(a => a.AssignmentId!.Value).ToHashSet();
-
-    // 1. Asignaciones que ya no vienen
-    foreach (var removed in course.Assignments.Where(a => !keepIds.Contains(a.Id)).ToList())
+    // 1. Quitar: sin formularios, así que se borran con sus personas (cascada).
+    foreach (var assignment in removed)
     {
-        RetireAssignment(course, removed, usedEmails, now, currentUser);
+        course.Assignments.Remove(assignment);
+        _repository.Remove(assignment);
     }
 
-    // 2. Asignaciones que siguen: solo cambia la fecha
+    // 2. Las que siguen: solo cambia la fecha.
     foreach (var assignmentDraft in draft.Assignments.Where(a => a.AssignmentId is not null))
     {
         var assignment = existing[assignmentDraft.AssignmentId!.Value];
@@ -951,18 +1039,18 @@ public async Task<CourseResult<SaveCourseResultDto>> UpdateAsync(
         assignment.UpdatedBy = currentUser;
     }
 
-    // 3. Grupos nuevos
-    var overlapping = 0;
+    // 3. Nuevas.
+    var skipped = 0;
     foreach (var assignmentDraft in newDrafts)
     {
-        var (assignment, skipped) = NewAssignment(assignmentDraft, groups[assignmentDraft.GroupId], usedEmails, now, currentUser);
-        course.Assignments.Add(assignment);
-        overlapping += skipped;
+        var group = groups[assignmentDraft.GroupId];
+        course.Assignments.Add(NewAssignment(assignmentDraft, group, now, currentUser));
+        skipped += group.WithoutUserCount;
     }
 
     var saveConflict = await TrySaveAsync(ct);
     return saveConflict is null
-        ? CourseResult<SaveCourseResultDto>.Ok(new SaveCourseResultDto { CourseId = id, OverlappingUsers = overlapping })
+        ? CourseResult<SaveCourseResultDto>.Ok(new SaveCourseResultDto { CourseId = id, SkippedWithoutUser = skipped })
         : CourseResult<SaveCourseResultDto>.Fail(CourseResultStatus.Conflict, saveConflict);
 }
 
@@ -972,39 +1060,31 @@ public async Task<CourseResult<SyncAssignmentResultDto>> SyncAssignmentAsync(
 {
     var course = await _repository.GetForUpdateAsync(courseId, includeAssignments: true, ct);
     var assignment = course?.Assignments.FirstOrDefault(a => a.Id == assignmentId);
-    if (course is null || assignment is null)
+    if (assignment is null)
         return CourseResult<SyncAssignmentResultDto>.Fail(CourseResultStatus.NotFound, CourseConstants.AssignmentNotFound);
 
-    var groups = await _repository.GetGroupSnapshotsAsync([assignment.GroupId], ct);
-    if (!groups.TryGetValue(assignment.GroupId, out var group))
+    var groups = await _repository.GetGroupSnapshotsAsync([assignment.UserGroupId], ct);
+    if (!groups.TryGetValue(assignment.UserGroupId, out var group))
         return CourseResult<SyncAssignmentResultDto>.Fail(CourseResultStatus.Invalid, CourseConstants.GroupNotFound);
 
-    var groupEmails = group.Members.Select(m => m.Email).ToHashSet(StringComparer.OrdinalIgnoreCase);
-    var usedEmails = await _repository.GetCourseEmailsAsync(courseId, ct);
+    var groupUserIds = group.UserIds.ToHashSet();
     var now = Now();
 
-    // Pendientes que ya no están en el grupo. Los finalizados se conservan siempre.
+    // Pendientes que salieron del grupo. Quien ya diligenció el formulario se conserva siempre.
     var removedPending = 0;
-    foreach (var user in assignment.Users.Where(u => u.Status == CourseCompletionStatus.Pending && !groupEmails.Contains(u.Email)).ToList())
+    foreach (var user in assignment.Users.Where(u => u.Completion is null && !groupUserIds.Contains(u.UserId)).ToList())
     {
         assignment.Users.Remove(user);
         _repository.Remove(user);
-        usedEmails.Remove(user.Email);
         removedPending++;
     }
 
+    var current = assignment.Users.Select(u => u.UserId).ToHashSet();
     var added = 0;
-    var skipped = 0;
-    foreach (var member in group.Members)
+    foreach (var userId in group.UserIds)
     {
-        if (assignment.Users.Any(u => string.Equals(u.Email, member.Email, StringComparison.OrdinalIgnoreCase))) continue;
-        if (!usedEmails.Add(member.Email))
-        {
-            skipped++; // ya está en el curso por otro grupo
-            continue;
-        }
-
-        assignment.Users.Add(NewAssignmentUser(member, now));
+        if (!current.Add(userId)) continue;
+        assignment.Users.Add(NewAssignmentUser(userId, now));
         added++;
     }
 
@@ -1016,7 +1096,7 @@ public async Task<CourseResult<SyncAssignmentResultDto>> SyncAssignmentAsync(
     {
         Added = added,
         RemovedPending = removedPending,
-        SkippedInOtherGroups = skipped,
+        SkippedWithoutUser = group.WithoutUserCount,
     });
 }
 
@@ -1027,7 +1107,7 @@ public async Task<CourseResult<bool>> DeleteAsync(int id, string currentUser, Ca
 
     if (await _repository.HasAssignmentHistoryAsync(id, ct))
     {
-        // Tuvo asignaciones: se conserva el historial y el curso deja de listarse.
+        // Tuvo asignaciones: se conserva el historial (y los formularios) y el curso deja de listarse.
         course.Removed = true;
         course.UpdatedDate = Now();
         course.UpdatedBy = currentUser;
@@ -1041,75 +1121,44 @@ public async Task<CourseResult<bool>> DeleteAsync(int id, string currentUser, Ca
     return CourseResult<bool>.Ok(true);
 }
 
-// ── Privados nuevos ─────────────────────────────────────────────────
+// ── Privados ────────────────────────────────────────────────────────
 
-private static (CourseAssignment Assignment, int Skipped) NewAssignment(
-    AssignmentDraft draft, GroupSnapshot group, HashSet<string> usedEmails, DateTime now, string currentUser)
+private static CourseAssignment NewAssignment(AssignmentDraft draft, GroupSnapshot group, DateTime now, string currentUser)
 {
     var assignment = new CourseAssignment
     {
-        GroupId = draft.GroupId,
+        UserGroupId = draft.GroupId,
         DueDate = draft.DueDate,
         CreatedDate = now,
         CreatedBy = currentUser,
     };
 
-    var skipped = 0;
-    foreach (var member in group.Members)
+    // Todos los integrantes con usuario, aunque ya estén en otra asignación del mismo curso:
+    // cada asignación es un formulario distinto.
+    foreach (var userId in group.UserIds)
     {
-        // Una persona, una asignación por curso: si ya la trajo otro grupo, se queda en el primero.
-        if (!usedEmails.Add(member.Email))
-        {
-            skipped++;
-            continue;
-        }
-
-        assignment.Users.Add(NewAssignmentUser(member, now));
+        assignment.Users.Add(NewAssignmentUser(userId, now));
     }
 
-    return (assignment, skipped);
+    return assignment;
 }
 
-private static CourseAssignmentUser NewAssignmentUser(GroupMemberSnapshot member, DateTime now) => new()
+private static CourseAssignmentUser NewAssignmentUser(int userId, DateTime now) => new()
 {
-    Email = member.Email,
-    DisplayName = member.DisplayName,
-    UserId = member.UserId,
-    EntraObjectId = member.EntraObjectId,
-    Status = CourseCompletionStatus.Pending, // estado normal al asignar
+    UserId = userId,
     CreatedDate = now,
-    // AssignmentId y CourseId los completa EF desde la navegación al guardar.
+    // AssignmentId lo completa EF desde la navegación. Sin Completion = Pendiente.
 };
-
-/// <summary>Con finalizados: retiro lógico y se borran los pendientes. Sin finalizados: se borra.</summary>
-private void RetireAssignment(Course course, CourseAssignment assignment, HashSet<string> usedEmails, DateTime now, string currentUser)
-{
-    var hasCompleted = assignment.Users.Any(u => u.Status == CourseCompletionStatus.Completed);
-
-    foreach (var user in assignment.Users.Where(u => u.Status == CourseCompletionStatus.Pending).ToList())
-    {
-        assignment.Users.Remove(user);
-        _repository.Remove(user);
-        usedEmails.Remove(user.Email); // queda libre para que otro grupo del mismo guardado la asigne
-    }
-
-    if (hasCompleted)
-    {
-        assignment.Removed = true;
-        assignment.UpdatedDate = now;
-        assignment.UpdatedBy = currentUser;
-        return;
-    }
-
-    course.Assignments.Remove(assignment);
-    _repository.Remove(assignment);
-}
 ```
 
-> `TrySaveAsync` ya traduce los índices únicos a mensajes. Agrega el caso del índice nuevo en su `switch`:
-> `CourseIndexNames.CourseGroup => CourseConstants.GroupRepeated,`
+`TrySaveAsync` ya traduce los índices únicos a mensajes. Agrega los casos nuevos a su `switch`:
 
-En `ICourseService` cambian los tipos de `CreateAsync` y `UpdateAsync` a `CourseResult<SaveCourseResultDto>` y se agrega `SyncAssignmentAsync`.
+```csharp
+CourseIndexNames.AssignmentGroupDue => CourseConstants.GroupDueRepeated,
+CourseIndexNames.AssignmentUser => "Una persona quedó dos veces en la misma asignación. Intenta de nuevo.",
+```
+
+En `ICourseService`, `CreateAsync` y `UpdateAsync` devuelven `CourseResult<SaveCourseResultDto>`, y se agrega `SyncAssignmentAsync`.
 
 ---
 
@@ -1121,15 +1170,10 @@ En `ICourseService` cambian los tipos de `CreateAsync` y `UpdateAsync` a `Course
 namespace DOCCB.Application.Features.Courses.Application.DTOs;
 
 /// <summary>
-/// Quién es el usuario autenticado. El correo del token suele ser el UPN, que puede no
-/// coincidir con el correo guardado; por eso también se usa el object id de Entra ID.
+/// Lo que dice el token del usuario autenticado. La API lo convierte en su user_id
+/// buscando los correos en dbo.users.corporative_email.
 /// </summary>
-public sealed record CurrentUserIdentity(Guid? ObjectId, IReadOnlyList<string> Emails)
-{
-    public bool Owns(string email, Guid? entraObjectId) =>
-        (ObjectId is { } oid && entraObjectId == oid)
-        || Emails.Contains(email, StringComparer.OrdinalIgnoreCase);
-}
+public sealed record CurrentUserIdentity(Guid? ObjectId, IReadOnlyList<string> Emails);
 ```
 
 ### `Constants/CompletionConstants.cs`
@@ -1146,7 +1190,7 @@ public static class CompletionConstants
     public const int MinimumResponsesForSummary = 3;
 
     public const string FormNotFound = "No encontramos este curso entre tus asignaciones.";
-    public const string AlreadyCompleted = "Ya marcaste este curso como finalizado.";
+    public const string AlreadyCompleted = "Ya diligenciaste el formulario de este curso.";
     public const string RatingsRequired = "Califica la satisfacción y la utilidad del curso (de 0 a 5).";
 
     public static class Status
@@ -1163,26 +1207,28 @@ public static class CompletionConstants
 ```csharp
 namespace DOCCB.Application.Features.Courses.Application.DTOs;
 
-/// <summary>Una fila de "Mis cursos".</summary>
+/// <summary>Una fila de "Mis cursos": una asignación de la persona.</summary>
 public class MyCourseDto
 {
     public int AssignmentUserId { get; set; }
     public int CourseId { get; set; }
     public string CourseName { get; set; } = string.Empty;
     public string Modality { get; set; } = string.Empty;
-    public string? ExternalId { get; set; }
+    /// <summary>El mismo curso puede aparecer varias veces: el grupo y la fecha las distinguen.</summary>
+    public string GroupName { get; set; } = string.Empty;
     public DateOnly DueDate { get; set; }
     public string Status { get; set; } = string.Empty;   // PENDING | COMPLETED
     public DateTime? CompletedDate { get; set; }
     public bool IsOverdue { get; set; }
 }
 
-/// <summary>Lo que muestra el formulario. Todo de solo lectura para el usuario.</summary>
+/// <summary>Lo que muestra el formulario. Todo es de solo lectura para el usuario.</summary>
 public class CompletionFormDto
 {
     public int AssignmentUserId { get; set; }
     public string CourseName { get; set; } = string.Empty;
     public string Modality { get; set; } = string.Empty;
+    public string GroupName { get; set; } = string.Empty;
     public DateOnly DueDate { get; set; }
     public string Status { get; set; } = string.Empty;
     public DateTime? CompletedDate { get; set; }
@@ -1224,7 +1270,7 @@ public interface IManagementDirectory
 
 ### `Services/ManagementDirectory.cs` — conecta tu método existente
 
-Ya tienes un método que trae la gerencia desde el directorio activo. Esta clase solo lo adapta al contrato, para que el formulario no dependa de cómo se consulta.
+Ya tienes un método que trae la gerencia desde el directorio activo. Esta clase solo lo adapta al contrato.
 
 ```csharp
 using DOCCB.Application.Features.Courses.Application.DTOs;
@@ -1271,34 +1317,40 @@ using DOCCB.Domain.Enum;
 
 namespace DOCCB.Application.Contracts.Persistence;
 
-/// <summary>Una asignación de persona con los datos del curso, sin seguimiento.</summary>
+/// <summary>Una persona en una asignación, con lo que necesitan "Mis cursos" y el formulario.</summary>
 public sealed record AssignmentUserRow(
     int Id,
+    int UserId,
+    int AssignmentId,
     int CourseId,
     string CourseName,
     CourseModality Modality,
+    string GroupName,
     DateOnly DueDate,
-    string Email,
     string DisplayName,
-    Guid? EntraObjectId,
-    CourseCompletionStatus Status,
+    string Email,
     DateTime? CompletedDate,
-    bool AssignmentRemoved,
-    bool CourseRemoved);
+    bool CourseRemoved)
+{
+    public bool IsCompleted => CompletedDate is not null;
+}
+
+/// <summary>Conteo de calificaciones por asignación y valor. Nunca filas individuales.</summary>
+public sealed record RatingBucket(int AssignmentId, byte Satisfaction, byte Usefulness, int Count);
 
 public interface ICourseCompletionRepository
 {
-    Task<IReadOnlyList<AssignmentUserRow>> GetMyAssignmentsAsync(CurrentUserIdentity user, CancellationToken ct);
+    Task<IReadOnlyList<AssignmentUserRow>> GetMyAssignmentsAsync(int userId, CancellationToken ct);
     Task<AssignmentUserRow?> GetAssignmentUserAsync(int assignmentUserId, CancellationToken ct);
 
     /// <summary>
-    /// En una transacción: pasa la fila a COMPLETED solo si sigue PENDING, y guarda la calificación.
-    /// false = ya estaba finalizada (otra petición llegó primero).
+    /// Guarda el formulario y la calificación en un solo SaveChanges.
+    /// false = ya existía un formulario para esa persona y asignación (doble envío); no se guardó nada.
     /// </summary>
-    Task<bool> TryCompleteAsync(int assignmentUserId, DateTime completedDate, string? management, CourseRating rating, CancellationToken ct);
+    Task<bool> TryCompleteAsync(CourseAssignmentCompletion completion, CourseRating rating, CancellationToken ct);
 
     Task<CourseProgressDto?> GetProgressAsync(int courseId, DateOnly today, CancellationToken ct);
-    Task<RatingSummaryDto> GetRatingSummaryAsync(int courseId, int minimumResponses, CancellationToken ct);
+    Task<IReadOnlyList<RatingBucket>> GetRatingBucketsAsync(int courseId, CancellationToken ct);
     Task<AssignedUsersPageDto> GetAssignmentUsersAsync(int courseId, int assignmentId, AssignedUsersQuery query, DateOnly today, CancellationToken ct);
 }
 ```
@@ -1310,7 +1362,6 @@ using DOCCB.Application.Contracts.Persistence;
 using DOCCB.Application.Features.Courses.Application.Constants;
 using DOCCB.Application.Features.Courses.Application.DTOs;
 using DOCCB.Domain.Entities;
-using DOCCB.Domain.Enum;
 using DOCCB.Infraestructure.Common;
 using DOCCB.Infraestructure.Persistence.Models;
 using Microsoft.Data.SqlClient;
@@ -1321,7 +1372,7 @@ namespace DOCCB.Infraestructure.Repositories;
 
 /// <summary>
 /// Hereda de GenericRepositoryBase como el resto de repositorios: _dbSet es course_assignment_user
-/// y _context da acceso a course, course_assignment y course_rating.
+/// y _context da acceso a las demás tablas.
 /// </summary>
 public class CourseCompletionRepository(DOCCbDbContext context)
     : GenericRepositoryBase<DOCCbDbContext, CourseAssignmentUser>(context), ICourseCompletionRepository
@@ -1330,33 +1381,24 @@ public class CourseCompletionRepository(DOCCbDbContext context)
     private static readonly Expression<Func<CourseAssignmentUser, AssignmentUserRow>> ToRow =
         u => new AssignmentUserRow(
                 u.Id,
-                u.CourseId,
+                u.UserId,
+                u.AssignmentId,
+                u.Assignment.CourseId,
                 u.Assignment.Course.Name,
                 u.Assignment.Course.Modality,
+                u.Assignment.UserGroup.Name,
                 u.Assignment.DueDate,
-                u.Email,
-                u.DisplayName,
-                u.EntraObjectId,
-                u.Status,
-                u.CompletedDate,
-                u.Assignment.Removed,
+                u.User.DisplayName,
+                u.User.CorportativeEmail ?? string.Empty,
+                u.Completion != null ? (DateTime?)u.Completion.CreatedDate : null,
                 u.Assignment.Course.Removed);
 
-    public Task<IReadOnlyList<AssignmentUserRow>> GetMyAssignmentsAsync(CurrentUserIdentity user, CancellationToken ct) =>
-        Guard<IReadOnlyList<AssignmentUserRow>>(async () =>
-        {
-            var emails = user.Emails.ToList();
-            var oid = user.ObjectId;
-
-            return await _dbSet
-                .AsNoTracking()
-                .Where(u => emails.Contains(u.Email) || (oid != null && u.EntraObjectId == oid))
-                .Where(u => !u.Assignment.Course.Removed)
-                // Si retiraron el grupo, el pendiente desaparece; lo finalizado se sigue viendo.
-                .Where(u => !u.Assignment.Removed || u.Status == CourseCompletionStatus.Completed)
-                .Select(ToRow)
-                .ToListAsync(ct);
-        });
+    public Task<IReadOnlyList<AssignmentUserRow>> GetMyAssignmentsAsync(int userId, CancellationToken ct) =>
+        Guard<IReadOnlyList<AssignmentUserRow>>(async () => await _dbSet
+            .AsNoTracking()
+            .Where(u => u.UserId == userId && !u.Assignment.Course.Removed)
+            .Select(ToRow)
+            .ToListAsync(ct));
 
     public Task<AssignmentUserRow?> GetAssignmentUserAsync(int assignmentUserId, CancellationToken ct) =>
         Guard(() => _dbSet
@@ -1365,40 +1407,27 @@ public class CourseCompletionRepository(DOCCbDbContext context)
             .Select(ToRow)
             .FirstOrDefaultAsync(ct));
 
-    public Task<bool> TryCompleteAsync(
-        int assignmentUserId, DateTime completedDate, string? management, CourseRating rating, CancellationToken ct) =>
-        Guard(() => CompleteInTransactionAsync(assignmentUserId, completedDate, management, rating, ct));
+    public Task<bool> TryCompleteAsync(CourseAssignmentCompletion completion, CourseRating rating, CancellationToken ct) =>
+        Guard(() => SaveCompletionAsync(completion, rating, ct));
 
-    private Task<bool> CompleteInTransactionAsync(
-        int assignmentUserId, DateTime completedDate, string? management, CourseRating rating, CancellationToken ct)
+    private async Task<bool> SaveCompletionAsync(CourseAssignmentCompletion completion, CourseRating rating, CancellationToken ct)
     {
-        // Si el DbContext usa EnableRetryOnFailure, las transacciones deben ir dentro de la estrategia.
-        var strategy = _context.Database.CreateExecutionStrategy();
+        _context.Set<CourseAssignmentCompletion>().Add(completion);
+        // La calificación no tiene ninguna referencia a la persona ni a su fila de asignación.
+        _context.Set<CourseRating>().Add(rating);
 
-        return strategy.ExecuteAsync(async () =>
+        try
         {
-            await using var transaction = await _context.Database.BeginTransactionAsync(ct);
-
-            // UPDATE condicional: la segunda petición de un doble clic no encuentra la fila PENDING.
-            var affected = await _dbSet
-                .Where(u => u.Id == assignmentUserId && u.Status == CourseCompletionStatus.Pending)
-                .ExecuteUpdateAsync(set => set
-                    .SetProperty(u => u.Status, CourseCompletionStatus.Completed)
-                    .SetProperty(u => u.CompletedDate, completedDate)
-                    .SetProperty(u => u.ManagementName, management), ct);
-
-            if (affected == 0)
-            {
-                await transaction.RollbackAsync(ct);
-                return false;
-            }
-
-            // La calificación va en la misma transacción, pero sin ninguna referencia a la persona.
-            _context.Set<CourseRating>().Add(rating);
+            // Un solo SaveChanges = una sola transacción: se guardan las dos o ninguna.
             await _context.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
             return true;
-        });
+        }
+        catch (DbUpdateException ex) when (IsDuplicateCompletion(ex))
+        {
+            // Doble envío: otra petición ya guardó el formulario. De esta no quedó nada.
+            _context.ChangeTracker.Clear();
+            return false;
+        }
     }
 
     public Task<CourseProgressDto?> GetProgressAsync(int courseId, DateOnly today, CancellationToken ct) =>
@@ -1410,59 +1439,33 @@ public class CourseCompletionRepository(DOCCbDbContext context)
                 CourseId = c.Id,
                 CourseName = c.Name,
                 Assignments = c.Assignments
-                    .Where(a => !a.Removed)
                     .OrderBy(a => a.DueDate)
+                    .ThenBy(a => a.Id)
                     .Select(a => new AssignmentProgressDto
                     {
                         AssignmentId = a.Id,
-                        GroupName = a.Group.Name,
+                        GroupId = a.UserGroupId,
+                        GroupName = a.UserGroup.Name,
+                        GroupRemoved = a.UserGroup.Removed,
                         DueDate = a.DueDate,
                         Total = a.Users.Count(),
-                        Completed = a.Users.Count(u => u.Status == CourseCompletionStatus.Completed),
-                        Overdue = a.DueDate < today ? a.Users.Count(u => u.Status == CourseCompletionStatus.Pending) : 0,
+                        Completed = a.Users.Count(u => u.Completion != null),
+                        Overdue = a.DueDate < today ? a.Users.Count(u => u.Completion == null) : 0,
+                        // Hoy en el grupo sin usuario en DOCCB: no pueden recibir el curso.
+                        WithoutUser = a.UserGroup.Members.Count(m => m.UserId == null),
                     })
                     .ToList(),
             })
+            .AsSplitQuery()
             .FirstOrDefaultAsync(ct));
 
-    public Task<RatingSummaryDto> GetRatingSummaryAsync(int courseId, int minimumResponses, CancellationToken ct) =>
-        Guard(() => BuildRatingSummaryAsync(courseId, minimumResponses, ct));
-
-    private async Task<RatingSummaryDto> BuildRatingSummaryAsync(int courseId, int minimumResponses, CancellationToken ct)
-    {
-        var ratings = _context.Set<CourseRating>().AsNoTracking().Where(r => r.CourseId == courseId);
-        var responses = await ratings.CountAsync(ct);
-
-        // Con pocas respuestas un promedio puede delatar a alguien: solo se devuelve el conteo.
-        if (responses < minimumResponses)
-        {
-            return new RatingSummaryDto { Responses = responses, Visible = false, MinimumResponses = minimumResponses };
-        }
-
-        var satisfaction = await ratings.GroupBy(r => r.Satisfaction).Select(g => new { Score = g.Key, Count = g.Count() }).ToListAsync(ct);
-        var usefulness = await ratings.GroupBy(r => r.Usefulness).Select(g => new { Score = g.Key, Count = g.Count() }).ToListAsync(ct);
-
-        int[] Distribution(IEnumerable<(byte Score, int Count)> groups)
-        {
-            var buckets = new int[CompletionConstants.MaxRating + 1];
-            foreach (var (score, count) in groups) buckets[score] = count;
-            return buckets;
-        }
-
-        var satisfactionBuckets = Distribution(satisfaction.Select(x => (x.Score, x.Count)));
-        var usefulnessBuckets = Distribution(usefulness.Select(x => (x.Score, x.Count)));
-
-        return new RatingSummaryDto
-        {
-            Responses = responses,
-            Visible = true,
-            MinimumResponses = minimumResponses,
-            SatisfactionAverage = Math.Round(satisfactionBuckets.Select((count, score) => count * score).Sum() / (double)responses, 1),
-            UsefulnessAverage = Math.Round(usefulnessBuckets.Select((count, score) => count * score).Sum() / (double)responses, 1),
-            SatisfactionDistribution = satisfactionBuckets,
-            UsefulnessDistribution = usefulnessBuckets,
-        };
-    }
+    public Task<IReadOnlyList<RatingBucket>> GetRatingBucketsAsync(int courseId, CancellationToken ct) =>
+        Guard<IReadOnlyList<RatingBucket>>(async () => await _context.Set<CourseRating>()
+            .AsNoTracking()
+            .Where(r => r.CourseId == courseId)
+            .GroupBy(r => new { r.AssignmentId, r.Satisfaction, r.Usefulness })
+            .Select(g => new RatingBucket(g.Key.AssignmentId, g.Key.Satisfaction, g.Key.Usefulness, g.Count()))
+            .ToListAsync(ct));
 
     public Task<AssignedUsersPageDto> GetAssignmentUsersAsync(
         int courseId, int assignmentId, AssignedUsersQuery query, DateOnly today, CancellationToken ct) =>
@@ -1473,55 +1476,45 @@ public class CourseCompletionRepository(DOCCbDbContext context)
     {
         var users = _dbSet
             .AsNoTracking()
-            .Where(u => u.CourseId == courseId && u.AssignmentId == assignmentId);
+            .Where(u => u.AssignmentId == assignmentId && u.Assignment.CourseId == courseId);
 
         if (query.Search is { Length: > 0 } term)
         {
-            users = users.Where(u => u.DisplayName.Contains(term) || u.Email.Contains(term));
+            users = users.Where(u => u.User.DisplayName.Contains(term) || (u.User.CorportativeEmail ?? "").Contains(term));
         }
 
         users = query.Status switch
         {
-            CompletionConstants.Status.Completed => users.Where(u => u.Status == CourseCompletionStatus.Completed),
-            CompletionConstants.Status.Pending => users.Where(u => u.Status == CourseCompletionStatus.Pending),
-            CompletionConstants.Status.Overdue => users.Where(u => u.Status == CourseCompletionStatus.Pending && u.Assignment.DueDate < today),
+            CompletionConstants.Status.Completed => users.Where(u => u.Completion != null),
+            CompletionConstants.Status.Pending => users.Where(u => u.Completion == null),
+            CompletionConstants.Status.Overdue => users.Where(u => u.Completion == null && u.Assignment.DueDate < today),
             _ => users,
         };
 
         var total = await users.CountAsync(ct);
 
         var items = await users
-            .OrderBy(u => u.DisplayName)
+            .OrderBy(u => u.User.DisplayName)
             .ThenBy(u => u.Id)
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
-            .Select(u => new
+            .Select(u => new AssignedUserProgressDto
             {
-                u.DisplayName,
-                u.Email,
-                InDoccb = u.UserId != null,
-                u.Status,
-                u.CompletedDate,
-                u.ManagementName,
-                u.Assignment.DueDate,
+                DisplayName = u.User.DisplayName,
+                Email = u.User.CorportativeEmail ?? string.Empty,
+                Status = u.Completion != null ? CompletionConstants.Status.Completed : CompletionConstants.Status.Pending,
+                IsOverdue = u.Completion == null && u.Assignment.DueDate < today,
+                CompletedDate = u.Completion != null ? (DateTime?)u.Completion.CreatedDate : null,
+                Management = u.Completion != null ? u.Completion.ManagementName : null,
             })
             .ToListAsync(ct);
 
-        return new AssignedUsersPageDto
-        {
-            TotalCount = total,
-            Items = items.Select(u => new AssignedUserProgressDto
-            {
-                DisplayName = u.DisplayName,
-                Email = u.Email,
-                InDoccb = u.InDoccb,
-                Status = u.Status == CourseCompletionStatus.Completed ? CompletionConstants.Status.Completed : CompletionConstants.Status.Pending,
-                IsOverdue = u.Status == CourseCompletionStatus.Pending && u.DueDate < today,
-                CompletedDate = u.CompletedDate,
-                Management = u.ManagementName,
-            }).ToList(),
-        };
+        return new AssignedUsersPageDto { TotalCount = total, Items = items };
     }
+
+    private static bool IsDuplicateCompletion(DbUpdateException ex) =>
+        ex.InnerException is SqlException { Number: 2601 or 2627 } sql
+        && sql.Message.Contains(CourseIndexNames.Completion, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Misma convención que GenericRepositoryBase: los errores de base de datos suben tal cual
@@ -1541,7 +1534,68 @@ public class CourseCompletionRepository(DOCCbDbContext context)
 }
 ```
 
-> **Por qué `Guard`:** `GenericRepositoryBase` deja subir `DbUpdateException`, `SqlException` y `TimeoutException`, y envuelve cualquier otra excepción en `InvalidOperationException`. `Guard` aplica esa convención a los métodos propios de este repositorio y además deja pasar `OperationCanceledException`, que la base hoy envuelve (ver [referencia-estilos-y-capas-doccb.md](referencia-estilos-y-capas-doccb.md)). Si agregas ese `catch` a la base, puedes mover `Guard` allí como método `protected` y reutilizarlo en `CourseRepository` y `UserGroupRepository`.
+> **Por qué `Guard`:** aplica la convención de `GenericRepositoryBase` a los métodos propios y además deja pasar `OperationCanceledException`, que la base hoy envuelve ([referencia-estilos-y-capas-doccb.md](referencia-estilos-y-capas-doccb.md)). Si agregas ese `catch` a la base, puedes mover `Guard` allí como `protected`.
+>
+> `DisplayName` y `CorportativeEmail` son los nombres de la entidad `User` en tu código. Si `DisplayName` no existe, arma el nombre con las columnas que tengas.
+
+### `Helpers/RatingSummaryBuilder.cs`
+
+La regla de anonimato vive en la capa de aplicación, no en la consulta.
+
+```csharp
+using DOCCB.Application.Contracts.Persistence;
+using DOCCB.Application.Features.Courses.Application.Constants;
+using DOCCB.Application.Features.Courses.Application.DTOs;
+
+namespace DOCCB.Application.Features.Courses.Application.Helpers;
+
+public static class RatingSummaryBuilder
+{
+    public static RatingSummaryDto Build(IEnumerable<RatingBucket> buckets, int minimumResponses)
+    {
+        var list = buckets.ToList();
+        var responses = list.Sum(b => b.Count);
+
+        // Con pocas respuestas un promedio puede delatar a alguien: solo se informa el conteo.
+        if (responses < minimumResponses)
+        {
+            return new RatingSummaryDto { Responses = responses, Visible = false, MinimumResponses = minimumResponses };
+        }
+
+        var satisfaction = new int[CompletionConstants.MaxRating + 1];
+        var usefulness = new int[CompletionConstants.MaxRating + 1];
+
+        foreach (var bucket in list)
+        {
+            satisfaction[bucket.Satisfaction] += bucket.Count;
+            usefulness[bucket.Usefulness] += bucket.Count;
+        }
+
+        return new RatingSummaryDto
+        {
+            Responses = responses,
+            Visible = true,
+            MinimumResponses = minimumResponses,
+            SatisfactionAverage = Average(satisfaction, responses),
+            UsefulnessAverage = Average(usefulness, responses),
+            SatisfactionDistribution = satisfaction,
+            UsefulnessDistribution = usefulness,
+        };
+    }
+
+    /// <summary>
+    /// Por asignación solo si TODAS las asignaciones con respuestas llegan al mínimo.
+    /// Si no, restando el total del curso menos las visibles se deducirían las ocultas.
+    /// </summary>
+    public static bool CanShowPerAssignment(IEnumerable<RatingBucket> buckets, int minimumResponses) =>
+        buckets
+            .GroupBy(b => b.AssignmentId)
+            .All(g => g.Sum(b => b.Count) >= minimumResponses);
+
+    private static double Average(int[] buckets, int responses) =>
+        Math.Round(buckets.Select((count, score) => count * score).Sum() / (double)responses, 1);
+}
+```
 
 ### `Services/CourseCompletionService.cs`
 
@@ -1553,12 +1607,12 @@ using DOCCB.Application.Features.Courses.Application.DTOs;
 using DOCCB.Application.Features.Courses.Application.Helpers;
 using DOCCB.Application.Features.Courses.Application.Interfaces;
 using DOCCB.Domain.Entities;
-using DOCCB.Domain.Enum;
 
 namespace DOCCB.Application.Features.Courses.Application.Services;
 
 public class CourseCompletionService(
     ICourseCompletionRepository repository,
+    IUserSearchRepository users,
     IManagementDirectory managementDirectory,
     TimeProvider timeProvider) : ICourseCompletionService
 {
@@ -1566,8 +1620,11 @@ public class CourseCompletionService(
 
     public async Task<ServiceResult<List<MyCourseDto>>> GetMyCoursesAsync(CurrentUserIdentity user, CancellationToken ct = default)
     {
+        var userId = await ResolveUserIdAsync(user, ct);
+        if (userId is null) return ServiceResult<List<MyCourseDto>>.Ok([]);
+
         var today = BusinessDate.Today(timeProvider);
-        var rows = await repository.GetMyAssignmentsAsync(user, ct);
+        var rows = await repository.GetMyAssignmentsAsync(userId.Value, ct);
 
         var courses = rows
             .Select(row => new MyCourseDto
@@ -1576,8 +1633,9 @@ public class CourseCompletionService(
                 CourseId = row.CourseId,
                 CourseName = row.CourseName,
                 Modality = CourseModalityCodes.ToCode(row.Modality),
+                GroupName = row.GroupName,
                 DueDate = row.DueDate,
-                Status = ToCode(row.Status),
+                Status = ToCode(row),
                 CompletedDate = row.CompletedDate,
                 IsOverdue = IsOverdue(row, today),
             })
@@ -1598,18 +1656,17 @@ public class CourseCompletionService(
         var row = await FindOwnedAsync(assignmentUserId, user, ct);
         if (row is null) return ServiceResult<CompletionFormDto>.Fail(ServiceResultStatus.NotFound, CompletionConstants.FormNotFound);
 
-        // La gerencia se consulta cada vez que se abre el formulario, como pide el requisito.
-        var management = row.Status == CourseCompletionStatus.Pending
-            ? await managementDirectory.GetManagementAsync(user, ct)
-            : null;
+        // La gerencia se consulta cada vez que se abre el formulario pendiente.
+        var management = row.IsCompleted ? null : await managementDirectory.GetManagementAsync(user, ct);
 
         return ServiceResult<CompletionFormDto>.Ok(new CompletionFormDto
         {
             AssignmentUserId = row.Id,
             CourseName = row.CourseName,
             Modality = CourseModalityCodes.ToCode(row.Modality),
+            GroupName = row.GroupName,
             DueDate = row.DueDate,
-            Status = ToCode(row.Status),
+            Status = ToCode(row),
             CompletedDate = row.CompletedDate,
             IsOverdue = IsOverdue(row, BusinessDate.Today(timeProvider)),
             UserDisplayName = row.DisplayName,
@@ -1627,37 +1684,57 @@ public class CourseCompletionService(
         var row = await FindOwnedAsync(assignmentUserId, user, ct);
         if (row is null) return ServiceResult<CompletionResultDto>.Fail(ServiceResultStatus.NotFound, CompletionConstants.FormNotFound);
 
-        if (row.Status == CourseCompletionStatus.Completed || row.AssignmentRemoved)
+        if (row.IsCompleted)
             return ServiceResult<CompletionResultDto>.Fail(ServiceResultStatus.Conflict, CompletionConstants.AlreadyCompleted);
 
         // La gerencia NO viene del navegador: se vuelve a consultar aquí.
         var management = await managementDirectory.GetManagementAsync(user, ct);
-        var completedDate = timeProvider.GetUtcNow().UtcDateTime;
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+
+        var completion = new CourseAssignmentCompletion
+        {
+            AssignmentUserId = row.Id,
+            ManagementName = management,
+            CreatedDate = now, // requisito: fecha del registro, sin pedírsela al usuario
+        };
 
         var rating = new CourseRating
         {
             Id = Guid.NewGuid(),
             CourseId = row.CourseId,
+            AssignmentId = row.AssignmentId,
             Satisfaction = (byte)dto.Satisfaction!.Value,
             Usefulness = (byte)dto.Usefulness!.Value,
-            CreatedDate = BusinessDate.Today(timeProvider), // requisito: fecha del registro, sin pedírsela al usuario
+            CreatedDate = BusinessDate.Today(timeProvider), // solo la fecha
         };
 
-        var completed = await repository.TryCompleteAsync(assignmentUserId, completedDate, management, rating, ct);
+        var saved = await repository.TryCompleteAsync(completion, rating, ct);
 
-        return completed
-            ? ServiceResult<CompletionResultDto>.Ok(new CompletionResultDto { CompletedDate = completedDate })
+        return saved
+            ? ServiceResult<CompletionResultDto>.Ok(new CompletionResultDto { CompletedDate = now })
             : ServiceResult<CompletionResultDto>.Fail(ServiceResultStatus.Conflict, CompletionConstants.AlreadyCompleted);
     }
 
-    // ── Seguimiento (administración) ────────────────────────────────
+    // ── Grupos asignados (administración) ───────────────────────────
 
     public async Task<ServiceResult<CourseProgressDto>> GetProgressAsync(int courseId, CancellationToken ct = default)
     {
         var progress = await repository.GetProgressAsync(courseId, BusinessDate.Today(timeProvider), ct);
         if (progress is null) return ServiceResult<CourseProgressDto>.Fail(ServiceResultStatus.NotFound, CourseConstants.CourseNotFound);
 
-        progress.Ratings = await repository.GetRatingSummaryAsync(courseId, CompletionConstants.MinimumResponsesForSummary, ct);
+        var buckets = await repository.GetRatingBucketsAsync(courseId, ct);
+        var minimum = CompletionConstants.MinimumResponsesForSummary;
+
+        progress.Ratings = RatingSummaryBuilder.Build(buckets, minimum);
+
+        if (RatingSummaryBuilder.CanShowPerAssignment(buckets, minimum))
+        {
+            foreach (var assignment in progress.Assignments)
+            {
+                assignment.Ratings = RatingSummaryBuilder.Build(buckets.Where(b => b.AssignmentId == assignment.AssignmentId), minimum);
+            }
+        }
+
         return ServiceResult<CourseProgressDto>.Ok(progress);
     }
 
@@ -1677,32 +1754,43 @@ public class CourseCompletionService(
 
     // ── Privados ────────────────────────────────────────────────────
 
+    /// <summary>user_id del usuario autenticado en dbo.users. null si no está o si sus correos apuntan a dos personas.</summary>
+    private async Task<int?> ResolveUserIdAsync(CurrentUserIdentity user, CancellationToken ct)
+    {
+        if (user.Emails.Count == 0) return null;
+
+        var matches = await users.FindByEmailsAsync(user.Emails.ToList(), ct);
+        var ids = matches.Select(m => m.UserId).Distinct().ToList();
+
+        return ids.Count == 1 ? ids[0] : null;
+    }
+
     /// <summary>
     /// Si la fila no existe o es de otra persona, responde lo mismo: "no encontrado".
-    /// Así nadie puede averiguar ids de asignaciones ajenas probando números.
+    /// Así nadie puede averiguar ids ajenos probando números.
     /// </summary>
-    private async Task<AssignmentUserRow?> FindOwnedAsync(int id, CurrentUserIdentity user, CancellationToken ct)
+    private async Task<AssignmentUserRow?> FindOwnedAsync(int assignmentUserId, CurrentUserIdentity user, CancellationToken ct)
     {
-        var row = await repository.GetAssignmentUserAsync(id, ct);
+        var userId = await ResolveUserIdAsync(user, ct);
+        if (userId is null) return null;
 
-        if (row is null || row.CourseRemoved || !user.Owns(row.Email, row.EntraObjectId)) return null;
-        if (row.AssignmentRemoved && row.Status == CourseCompletionStatus.Pending) return null;
-
-        return row;
+        var row = await repository.GetAssignmentUserAsync(assignmentUserId, ct);
+        return row is null || row.CourseRemoved || row.UserId != userId ? null : row;
     }
 
     private static bool IsValidRating(int? value) =>
         value is >= CompletionConstants.MinRating and <= CompletionConstants.MaxRating;
 
-    private static bool IsOverdue(AssignmentUserRow row, DateOnly today) =>
-        row.Status == CourseCompletionStatus.Pending && row.DueDate < today;
+    private static bool IsOverdue(AssignmentUserRow row, DateOnly today) => !row.IsCompleted && row.DueDate < today;
 
-    private static string ToCode(CourseCompletionStatus status) =>
-        status == CourseCompletionStatus.Completed ? CompletionConstants.Status.Completed : CompletionConstants.Status.Pending;
+    private static string ToCode(AssignmentUserRow row) =>
+        row.IsCompleted ? CompletionConstants.Status.Completed : CompletionConstants.Status.Pending;
 }
 ```
 
-> Este servicio **no escribe logs** con el usuario y sus calificaciones. Mantenlo así.
+> Este servicio **no escribe logs** con la persona y sus calificaciones. Mantenlo así.
+>
+> `IUserSearchRepository.FindByEmailsAsync` viene de la guía de grupos y busca en `users.corporative_email`.
 
 ### `Interfaces/ICourseCompletionService.cs`
 
@@ -1725,13 +1813,14 @@ public interface ICourseCompletionService
 
 ---
 
-## 9. Paso 6 — Seguimiento (DTOs)
+## 9. Paso 6 — Grupos asignados (DTOs)
 
 ### `DTOs/CourseProgressDtos.cs`
 
 ```csharp
 namespace DOCCB.Application.Features.Courses.Application.DTOs;
 
+/// <summary>Lo que ve el administrador desde el listado: los grupos del curso y su avance.</summary>
 public class CourseProgressDto
 {
     public int CourseId { get; set; }
@@ -1740,15 +1829,22 @@ public class CourseProgressDto
     public RatingSummaryDto Ratings { get; set; } = new();
 }
 
+/// <summary>Una asignación: grupo + fecha de finalización.</summary>
 public class AssignmentProgressDto
 {
     public int AssignmentId { get; set; }
+    public int GroupId { get; set; }
     public string GroupName { get; set; } = string.Empty;
+    public bool GroupRemoved { get; set; }
     public DateOnly DueDate { get; set; }
     public int Total { get; set; }
     public int Completed { get; set; }
-    /// <summary>Pendientes con la fecha límite ya pasada.</summary>
+    /// <summary>Pendientes con la fecha ya pasada.</summary>
     public int Overdue { get; set; }
+    /// <summary>Integrantes del grupo sin usuario en DOCCB: no recibieron el curso.</summary>
+    public int WithoutUser { get; set; }
+    /// <summary>null cuando no se pueden mostrar por asignación sin romper el anonimato.</summary>
+    public RatingSummaryDto? Ratings { get; set; }
 }
 
 /// <summary>Resumen anónimo. Si Visible es false, solo se informa cuántas respuestas hay.</summary>
@@ -1775,11 +1871,11 @@ public class AssignedUsersQueryDto
 
 public sealed record AssignedUsersQuery(string? Search, string? Status, int Page, int PageSize);
 
+/// <summary>Un integrante de la asignación con el estado de su formulario.</summary>
 public class AssignedUserProgressDto
 {
     public string DisplayName { get; set; } = string.Empty;
     public string Email { get; set; } = string.Empty;
-    public bool InDoccb { get; set; }
     public string Status { get; set; } = string.Empty;
     public bool IsOverdue { get; set; }
     public DateTime? CompletedDate { get; set; }
@@ -1797,7 +1893,7 @@ public class AssignedUsersPageDto
 
 ## 10. Paso 7 — Controladores
 
-### `WebApp/Common/Helper/ControllerExtensions.cs` ✏️ — identidad del usuario
+### `Common/Helper/ControllerExtensions.cs` ✏️ — identidad del usuario
 
 ```csharp
 /// <summary>Object id de Entra ID + todos los correos que trae el token, normalizados.</summary>
@@ -1817,7 +1913,7 @@ public static CurrentUserIdentity CurrentIdentity(this ClaimsPrincipal user)
 }
 ```
 
-### `WebApp/Controllers/MyCoursesController.cs`
+### `Controllers/MyCoursesController.cs`
 
 Para **cualquier** usuario autenticado: cada uno solo ve y diligencia lo suyo.
 
@@ -1841,6 +1937,7 @@ public class MyCoursesController(ICourseCompletionService service) : ControllerB
     public async Task<IActionResult> GetMyCourses(CancellationToken ct) =>
         this.ToActionResult(await _service.GetMyCoursesAsync(User.CurrentIdentity(), ct));
 
+    /// <summary>{id} es course_assignment_user.id: una persona en una asignación.</summary>
     [HttpGet("{id:int}/completion-form")]
     public async Task<IActionResult> GetForm(int id, CancellationToken ct) =>
         this.ToActionResult(await _service.GetFormAsync(id, User.CurrentIdentity(), ct));
@@ -1852,23 +1949,25 @@ public class MyCoursesController(ICourseCompletionService service) : ControllerB
 }
 ```
 
-### `WebApp/Controllers/CoursesController.cs` ✏️ — acciones nuevas
+### `Controllers/CoursesController.cs` ✏️ — acciones nuevas
 
 Inyecta también `ICourseCompletionService`.
 
 ```csharp
-[HttpPost("{id:int}/assignments/{assignmentId:int}/sync")]
-public async Task<IActionResult> SyncAssignment(int id, int assignmentId, CancellationToken ct) =>
-    ToActionResult(await _courseService.SyncAssignmentAsync(id, assignmentId, CurrentUser, ct));
-
-[HttpGet("{id:int}/progress")]
-public async Task<IActionResult> GetProgress(int id, CancellationToken ct) =>
+/// <summary>Grupos asignados al curso (grupo + fecha), con avance y calificaciones anónimas.</summary>
+[HttpGet("{id:int}/assignments")]
+public async Task<IActionResult> GetAssignments(int id, CancellationToken ct) =>
     this.ToActionResult(await _completionService.GetProgressAsync(id, ct));
 
+/// <summary>Integrantes de una asignación con el estado de su formulario.</summary>
 [HttpGet("{id:int}/assignments/{assignmentId:int}/users")]
 public async Task<IActionResult> GetAssignmentUsers(
     int id, int assignmentId, [FromQuery] AssignedUsersQueryDto query, CancellationToken ct) =>
     this.ToActionResult(await _completionService.GetAssignmentUsersAsync(id, assignmentId, query, ct));
+
+[HttpPost("{id:int}/assignments/{assignmentId:int}/sync")]
+public async Task<IActionResult> SyncAssignment(int id, int assignmentId, CancellationToken ct) =>
+    ToActionResult(await _courseService.SyncAssignmentAsync(id, assignmentId, CurrentUser, ct));
 ```
 
 Estas acciones quedan bajo el permiso de administración de cursos que ya tiene el controlador.
@@ -1888,6 +1987,7 @@ services.AddScoped<IManagementDirectory, ManagementDirectory>();
 
 ```csharp
 services.AddScoped<ICourseCompletionRepository, CourseCompletionRepository>();
+// IUserSearchRepository ya está registrado desde las guías anteriores.
 ```
 
 ---
@@ -1896,17 +1996,18 @@ services.AddScoped<ICourseCompletionRepository, CourseCompletionRepository>();
 
 | Método | Ruta | Quién | Respuesta |
 |---|---|---|---|
-| `POST` | `/api/courses` | Admin | `201` `{ courseId, overlappingUsers }` |
-| `PUT` | `/api/courses/{id}` | Admin | `200` `{ courseId, overlappingUsers }` |
+| `POST` | `/api/courses` | Admin | `201` `{ courseId, skippedWithoutUser }` |
+| `PUT` | `/api/courses/{id}` | Admin | `200` `{ courseId, skippedWithoutUser }` · `409` si se quita una asignación con formularios |
+| `GET` | `/api/courses` | Admin | Cada curso con `assignedGroupsCount`, `assignedUsersCount`, `completedUsersCount` |
 | `GET` | `/api/courses/{id}` | Admin | Detalle; cada asignación con `groupId`, `groupName`, `dueDate`, `totalUsers`, `completedUsers` |
-| `POST` | `/api/courses/{id}/assignments/{assignmentId}/sync` | Admin | `{ added, removedPending, skippedInOtherGroups }` |
-| `GET` | `/api/courses/{id}/progress` | Admin | Avance por grupo + resumen anónimo de calificaciones |
-| `GET` | `/api/courses/{id}/assignments/{assignmentId}/users?search=&status=&page=` | Admin | Personas con estado, gerencia y fecha de finalización |
-| `GET` | `/api/my-courses` | Cualquier usuario | Sus cursos, pendientes primero |
+| `GET` | `/api/courses/{id}/assignments` | Admin | Grupos asignados (grupo + fecha) con avance, `withoutUser` y calificaciones anónimas |
+| `GET` | `/api/courses/{id}/assignments/{assignmentId}/users?search=&status=&page=` | Admin | Integrantes con estado, gerencia y fecha de finalización |
+| `POST` | `/api/courses/{id}/assignments/{assignmentId}/sync` | Admin | `{ added, removedPending, skippedWithoutUser }` |
+| `GET` | `/api/my-courses` | Cualquier usuario | Sus asignaciones, pendientes primero |
 | `GET` | `/api/my-courses/{id}/completion-form` | El dueño | Datos del formulario, con la gerencia consultada en ese momento |
-| `POST` | `/api/my-courses/{id}/complete` | El dueño | `{ satisfaction, usefulness }` → `200` `{ completedDate }` · `409` si ya finalizó · `404` si no es suyo |
+| `POST` | `/api/my-courses/{id}/complete` | El dueño | `{ satisfaction, usefulness }` → `200` `{ completedDate }` · `409` si ya lo diligenció · `404` si no es suyo |
 
-Cuerpo de `POST /api/courses` y `PUT /api/courses/{id}`:
+Cuerpo de `POST /api/courses` y `PUT /api/courses/{id}` (el grupo 12 dos veces, con fechas distintas):
 
 ```json
 {
@@ -1914,8 +2015,9 @@ Cuerpo de `POST /api/courses` y `PUT /api/courses/{id}`:
   "modality": "VIRTUAL",
   "externalId": "LMS-2231",
   "assignments": [
-    { "assignmentId": null, "groupId": 12, "dueDate": "2026-10-30" },
-    { "assignmentId": 41,   "groupId": 7,  "dueDate": "2026-12-15" }
+    { "assignmentId": 41,   "groupId": 12, "dueDate": "2026-10-30" },
+    { "assignmentId": null, "groupId": 12, "dueDate": "2026-12-15" },
+    { "assignmentId": null, "groupId": 7,  "dueDate": "2026-10-30" }
   ]
 }
 ```
@@ -1924,36 +2026,38 @@ Cuerpo de `POST /api/courses` y `PUT /api/courses/{id}`:
 
 ## 13. Pruebas
 
-### Del servicio de cursos
+### Asignación
 
-- Crear con dos grupos que comparten 3 personas → `overlappingUsers = 3` y esas personas quedan en el primer grupo.
-- Editar cambiando el `groupId` de una asignación existente → `400` con `GroupChangeNotAllowed`.
-- Quitar un grupo sin finalizados → se borra con sus personas.
-- Quitar un grupo con finalizados → queda con `removed = 1`, sin pendientes, y los finalizados siguen.
-- Quitar el grupo A y agregar el grupo B que comparte personas con A, en el mismo guardado → las compartidas quedan en B sin error de índice único.
-- Actualizar desde el grupo después de agregar 2 personas al grupo y quitar 1 pendiente → `added = 2`, `removedPending = 1`.
+- Crear con el grupo 1 dos veces (30 oct y 15 dic) → dos asignaciones; cada integrante tiene **dos** filas en `course_assignment_user`.
+- Crear con el grupo 1 dos veces con la **misma** fecha → `400` con `GroupDueRepeated`.
+- Crear con un grupo que tiene 2 personas "solo directorio" → `skippedWithoutUser = 2` y esas personas no tienen fila.
+- Editar cambiando el `groupId` de una asignación guardada → `400` con `GroupChangeNotAllowed`.
+- Quitar una asignación sin formularios → se borra con sus personas.
+- Quitar una asignación con 3 formularios → `409` con el mensaje de cuántas personas; nada cambia.
+- Cambiar la fecha de una asignación con formularios → se acepta.
+- Actualizar desde el grupo después de agregar 2 personas y quitar 1 pendiente → `added = 2`, `removedPending = 1`; quien ya finalizó y salió del grupo se conserva.
 
-### Del formulario
+### Formulario
 
+- La misma persona en dos asignaciones del curso → "Mis cursos" muestra dos filas con grupo y fecha; diligenciar una deja la otra pendiente.
 - Abrir el formulario de otra persona → `404`, igual que un id que no existe.
-- Enviar sin una de las calificaciones → `400`.
-- Enviar con `6` o `-1` → `400`.
-- Enviar con `0` en las dos → se acepta (el 0 es válido si se elige).
-- Enviar dos veces seguidas → la primera `200`, la segunda `409`, y hay **una** sola fila en `course_rating`.
+- Usuario del token que no está en `dbo.users` → "Mis cursos" vacío y `404` en el formulario.
+- Enviar sin una calificación, con `6` o con `-1` → `400`.
+- Enviar con `0` en las dos → se acepta.
+- Enviar dos veces seguidas → la primera `200`, la segunda `409`; una sola fila en `course_assignment_completion` y una sola en `course_rating`.
 - Si el directorio falla, el formulario se abre con `management = null` y el envío se guarda igual.
-- Un usuario cuyo `preferred_username` es el UPN y cuyo correo guardado es otro → lo encuentra por `oid`.
-- Después de enviar: `course_assignment_user` en `COMPLETED` con fecha y gerencia; `course_rating` con el curso, las dos calificaciones y la fecha **sin hora**.
+- Después de enviar: `course_assignment_completion` con la gerencia y la fecha; `course_rating` con curso, asignación, las dos calificaciones y la fecha **sin hora**.
 
-### Del seguimiento
+### Grupos asignados y calificaciones
 
-- Con 2 respuestas → `visible = false`, sin promedios.
-- Con 3 respuestas (5, 4, 0) → promedio 3,0 y distribución `[1, 0, 0, 0, 1, 1]`.
-- Filtro `OVERDUE` → solo pendientes de grupos con fecha vencida.
+- Curso con asignaciones A (5 respuestas) y B (1 respuesta) → promedio del curso visible, **ninguna** asignación con promedio.
+- Curso con A (3) y B (4) → curso y las dos asignaciones visibles.
+- Filtro `OVERDUE` → solo pendientes de asignaciones vencidas.
 
-### De base de datos
+### Base de datos
 
-- La consulta de integridad de la sección 4 da el mismo número de finalizados y de calificaciones.
-- Intentar `UPDATE … SET status = 'COMPLETED'` sin `completed_date` → lo rechaza `ck_course_assignment_user_completed`.
+- La consulta de integridad de la sección 4 da el mismo número de formularios y calificaciones por asignación.
+- `DELETE` de una fila de `course_assignment_user` con formulario → lo rechaza `fk_course_assignment_completion_assignment_user`.
 
 ---
 
@@ -1961,29 +2065,28 @@ Cuerpo de `POST /api/courses` y `PUT /api/courses/{id}`:
 
 | Síntoma | Causa | Solución |
 |---|---|---|
-| "Mis cursos" sale vacío para algunas personas | El correo del token (UPN) no coincide con el guardado y la fila no tiene `entra_object_id` | Las personas que llegan del maestro no traen `entra_object_id`: asegúrate de que el token traiga también el claim de correo, o completa ese id al asignar. |
-| `The configured execution strategy does not support user-initiated transactions` | `EnableRetryOnFailure` activo y la transacción fuera de la estrategia | `TryCompleteAsync` ya usa `CreateExecutionStrategy`; no lo quites. |
-| Error `2601` en `ux_course_assignment_user_course_email` al guardar | El índice no está en la configuración de EF, que entonces no ordena el DELETE antes del INSERT | Déjalo en `CourseAssignmentUserConfiguration`. |
+| El script se detiene en el paso 0 | Falta `user_group_id` o `id`, o hay repetidos | Ejecuta la consulta de columnas o la de repetidos de la sección 4 y corrige antes de volver a ejecutar. |
+| Error de FK al crear `fk_course_assignment_user_group` | Hay asignaciones con un `user_group_id` que no existe | `SELECT * FROM dbo.course_assignment a WHERE NOT EXISTS (SELECT 1 FROM dbo.user_group g WHERE g.id = a.user_group_id)`. |
+| "Mis cursos" sale vacío | El correo del token no está en `users.corporative_email`, o dos usuarios comparten el correo | Revisa el maestro. La guía de grupos tiene la consulta de correos repetidos. |
+| `Cannot insert the value NULL into column 'course_id'` en `course_assignment_user` | Tu tabla conserva `course_id` de la primera guía | Mapéalo en la entidad y asígnalo en `NewAssignmentUser` (sección 4, nota). |
+| Error `547` al quitar una asignación | Tiene formularios y el servicio no lo detectó (la carga no incluyó `Completion`) | `GetForUpdateAsync` debe incluir `.ThenInclude(u => u.Completion)`. |
 | La gerencia siempre sale vacía | `ManagementDirectory` aún no llama a tu método real | Reemplaza la línea marcada con ⬇. |
-| Los promedios no aparecen | Hay menos de 3 respuestas | Es a propósito: protege el anonimato. |
+| Los promedios no aparecen | Menos de 3 respuestas, o una asignación con menos de 3 (entonces no hay promedios por asignación) | Es a propósito: protege el anonimato. |
 | Las calificaciones aparecen en los logs | Un middleware registra el cuerpo de las peticiones | Exclúyelo para `POST /api/my-courses/{id}/complete`. |
-| En los logs aparece `Error en el repositorio para la entidad …` cuando alguien cierra la página | La cancelación de la petición (`OperationCanceledException`) termina envuelta en `InvalidOperationException` | `Guard` la deja pasar. Haz lo mismo en `GenericRepositoryBase` con `catch (OperationCanceledException) { throw; }`. |
-| El script se detiene con "tiene datos del modelo anterior" | Ya había asignaciones persona por persona | Respáldalas, decide si se convierten en grupos y vuelve a ejecutar. |
+| En los logs aparece `Error en el repositorio para la entidad …` cuando alguien cierra la página | La cancelación termina envuelta en `InvalidOperationException` | `Guard` la deja pasar. Haz lo mismo en `GenericRepositoryBase`. |
 
 ---
 
 ## ✅ Checklist
 
-- [ ] `UserGroups.sql` ejecutado antes que `Cursos-v2.sql`.
-- [ ] `Cursos-v2.sql` ejecutado; consulta de integridad en cero diferencias.
-- [ ] Entidades, enum y configuraciones actualizados; `CourseRatingConfiguration` registrada.
-- [ ] `CourseIndexNames` con los índices nuevos y `TrySaveAsync` con el caso `CourseGroup`.
-- [ ] `CourseCompletionRepository` hereda de `GenericRepositoryBase` y está registrado en `InfrastructureServiceRegistration.cs`.
-- [ ] `AssignedGroupsCount` y `CompletedUsersCount` agregados al listado de cursos.
+- [ ] Consulta de columnas revisada; `course_id` en `course_assignment_user` resuelto (mapeado o inexistente).
+- [ ] `CursosFinalizacion.sql` ejecutado; consulta de integridad sin diferencias.
+- [ ] Índice viejo `ux_course_assignment_user_course_user` eliminado (una persona puede estar en varias asignaciones del curso).
+- [ ] Entidades y configuraciones actualizadas; `CourseAssignmentCompletionConfiguration` y `CourseRatingConfiguration` registradas.
+- [ ] `CourseIndexNames` y `TrySaveAsync` con los índices nuevos.
+- [ ] `CourseCompletionRepository` hereda de `GenericRepositoryBase` y está registrado.
 - [ ] `ManagementDirectory` conectado al método real que trae la gerencia.
-- [ ] Token con claim `oid` y con el correo; probado con un UPN distinto al correo.
-- [ ] `course_rating` sin llaves a usuario ni a asignación; fecha sin hora.
+- [ ] `course_rating` sin llave a la persona ni a `course_assignment_user`; fecha sin hora.
 - [ ] Endpoint de finalización excluido de cualquier registro de cuerpos de petición.
-- [ ] Promedios ocultos con menos de 3 respuestas.
-- [ ] `MyCoursesController` con `[Authorize]`; acciones de seguimiento con el permiso de administración de cursos.
-- [ ] Pruebas de doble envío, de propiedad (`404`) y de rangos de calificación.
+- [ ] `MyCoursesController` con `[Authorize]`; acciones de grupos asignados con el permiso de administración de cursos.
+- [ ] Pruebas de grupo repetido, doble envío, propiedad (`404`) y anonimato por asignación.
