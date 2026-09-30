@@ -192,6 +192,8 @@ Si ya tenías la página de tarjetas, reemplaza su bloque de tokens por:
 
 ## 5. Paso 2 — El token de URL (reutilizable)
 
+> ⭐ **Versión recomendada:** [filtros-url-angular.md](filtros-url-angular.md) generaliza este mecanismo para cualquier listado (`defineUrlQuery`, `syncQueryWithUrl`, `createSearchDraft`). Usa las mismas claves y códigos: los enlaces generados con esta sección siguen funcionando.
+
 ### `shared/utils/url-state.ts`
 
 No conoce cursos: recibe un objeto plano y un ámbito. Certificados puede usar el mismo archivo con `scope: 'certificates'`.
@@ -389,6 +391,8 @@ Recuerda importar `CourseSortField` desde `../domain/course.model`.
 ---
 
 ## 8. Paso 5 — ⭐ La consulta en la URL
+
+> Si vas a aplicar filtros en la URL a más de una pantalla, usa la versión genérica de [filtros-url-angular.md](filtros-url-angular.md) (sección 11 para cursos) en lugar de `course-query.url.ts` y `course-query-url.sync.ts`.
 
 ### `application/course-query.url.ts`
 

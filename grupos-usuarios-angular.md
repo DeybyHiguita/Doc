@@ -3175,6 +3175,8 @@ export class UserGroupBuilderPageComponent implements HasUnsavedChanges {
 
 ## 14. Paso 11 — El listado
 
+> **Filtros en la URL:** para que la búsqueda y la página queden en la URL (enlace compartible, F5, atrás / adelante), aplica [filtros-url-angular.md](filtros-url-angular.md), sección 12. Reemplaza el buscador con rebote de este componente por `createSearchDraft`.
+
 ### `presentation/user-groups-list-page/user-groups-list-page.component.ts`
 
 ```ts
