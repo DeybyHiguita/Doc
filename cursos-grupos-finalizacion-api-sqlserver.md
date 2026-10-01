@@ -128,7 +128,6 @@ DOCCB.Infraestructure/
 │   ├── CourseAssignmentCompletionConfiguration.cs    nuevo
 │   └── CourseRatingConfiguration.cs                  nuevo
 ├── Persistence/
-│   ├── Models/DOCCbDbContext.cs                      ✏️ + 2 configuraciones
 │   └── Scripts SQL/CursosFinalizacion.sql            ⭐ ajusta tus tablas y crea las nuevas
 └── Repositories/
     ├── CourseRepository.cs                           ✏️
@@ -431,8 +430,9 @@ La última consulta debe dar el mismo número en las dos columnas: cada formular
 namespace DOCCB.Domain.Entities;
 
 /// <summary>Un grupo asignado a un curso con una fecha de finalización. El mismo grupo puede repetirse con otra fecha.</summary>
-public class CourseAssignment : BaseEntity
+public class CourseAssignment
 {
+    public int Id { get; set; }
     public int CourseId { get; set; }
     public int UserGroupId { get; set; }
     public DateOnly DueDate { get; set; }
@@ -454,8 +454,9 @@ public class CourseAssignment : BaseEntity
 namespace DOCCB.Domain.Entities;
 
 /// <summary>Una persona en una asignación. Sin Completion = Pendiente.</summary>
-public class CourseAssignmentUser : BaseEntity
+public class CourseAssignmentUser
 {
+    public int Id { get; set; }
     public int AssignmentId { get; set; }
     public int UserId { get; set; }
     public DateTime CreatedDate { get; set; }
@@ -474,8 +475,9 @@ public class CourseAssignmentUser : BaseEntity
 namespace DOCCB.Domain.Entities;
 
 /// <summary>Formulario de finalización de una persona en una asignación. Sin calificaciones: esas son anónimas.</summary>
-public class CourseAssignmentCompletion : BaseEntity
+public class CourseAssignmentCompletion
 {
+    public int Id { get; set; }
     public int AssignmentUserId { get; set; }
 
     /// <summary>Gerencia del directorio activo al momento de finalizar.</summary>
@@ -510,7 +512,7 @@ public class CourseRating
 }
 ```
 
-> `BaseEntity` es la base que ya usan tus entidades (aporta `Id`). `CourseRating` no la usa porque su id es un `Guid`.
+> **Ninguna de estas entidades hereda `BaseEntity`.** `BaseEntity` agrega `CreatedDate` y `UpdatedDate`, y EF espera las dos columnas en la tabla. `course_assignment_user` y `course_assignment_completion` no tienen `updated_date` (heredarla causa `Invalid column name 'UpdatedDate'`). `course_assignment` sí tiene las dos, pero ya las declara con sus nombres de columna; heredarla las duplicaría.
 
 ---
 
@@ -699,13 +701,9 @@ public class CourseRatingConfiguration : IEntityTypeConfiguration<CourseRating>
 }
 ```
 
-### Registro en `Persistence/Models/DOCCbDbContext.cs`
+### Registro
 
-```csharp
-modelBuilder.ApplyConfiguration(new CourseAssignmentCompletionConfiguration()); // nueva
-modelBuilder.ApplyConfiguration(new CourseRatingConfiguration());               // nueva
-// CourseAssignmentConfiguration y CourseAssignmentUserConfiguration ya estaban registradas.
-```
+No hace falta: `OnModelCreating` llama a `ApplyConfigurationsFromAssembly(...)`, que carga solas todas las configuraciones de `Configurations/`.
 
 ---
 
@@ -2082,7 +2080,7 @@ Cuerpo de `POST /api/courses` y `PUT /api/courses/{id}` (el grupo 12 dos veces, 
 - [ ] Consulta de columnas revisada; `course_id` en `course_assignment_user` resuelto (mapeado o inexistente).
 - [ ] `CursosFinalizacion.sql` ejecutado; consulta de integridad sin diferencias.
 - [ ] Índice viejo `ux_course_assignment_user_course_user` eliminado (una persona puede estar en varias asignaciones del curso).
-- [ ] Entidades y configuraciones actualizadas; `CourseAssignmentCompletionConfiguration` y `CourseRatingConfiguration` registradas.
+- [ ] Entidades sin `BaseEntity` y configuraciones en `Configurations/` (se cargan solas).
 - [ ] `CourseIndexNames` y `TrySaveAsync` con los índices nuevos.
 - [ ] `CourseCompletionRepository` hereda de `GenericRepositoryBase` y está registrado.
 - [ ] `ManagementDirectory` conectado al método real que trae la gerencia.
