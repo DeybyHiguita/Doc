@@ -2,7 +2,8 @@
 
 Guía para guardar un registro de cada correo que envía DOCCB: qué alerta era, a quién se envió, cuándo y si salió bien.
 
-- **Uso:** interno. **No tiene controlador**: no se llama desde fuera de la API. Lo usan otros servicios (cursos, solicitudes, recordatorios…) cada vez que envían un correo.
+- **Registrar envíos:** interno. `IEmailAlertLogService` no tiene controlador: lo usan otros servicios (cursos, solicitudes, recordatorios…) cada vez que envían un correo.
+- **Consultar envíos:** un endpoint de **solo lectura** para la pantalla "Registro de correos" ([registro-correos-angular.md](registro-correos-angular.md)). Ver la sección 11.
 - **Tablas:** `dbo.email_alert_log` y `dbo.email_alert_recipient` (ya creadas).
 - **Estilo:** el de Request: `ITransactionExecutorHelper` + `unitOfWork.Repository<T>()`. Ver la sección 1.
 - **Stack:** .NET 8 · EF Core 8 · SQL Server
@@ -562,6 +563,317 @@ ORDER BY l.sent_date DESC;
 
 ---
 
+## 11. Consulta para la pantalla "Registro de correos"
+
+La pantalla filtra por **tipo de alerta**, **nombre** del destinatario y **correo** del destinatario. Cada fila es **un correo recibido por una persona**: si una alerta se envió a 40 personas, son 40 filas. Así, al filtrar por una persona, se ve exactamente lo que le llegó a ella.
+
+### ¿Repositorio propio? Sí, solo para leer
+
+| Condición | ¿Se cumple? |
+|---|---|
+| Proyección con datos de varias tablas | Sí: destinatario + log + nombre desde `dbo.users`. |
+| Subconsultas | Sí: `email_alert_recipient` no guarda el nombre y no tiene llave hacia `dbo.users`. El nombre se busca por `users.corporative_email`, y el repositorio genérico no tiene cómo cruzar dos tablas sin relación. |
+| Paginación con total y orden propio | Sí. |
+
+El registro de envíos (secciones 7 y 8) **sigue** con el repositorio genérico. Este repositorio es de solo lectura: no abre transacciones ni guarda nada, y el servicio sigue devolviendo `ResponseDto<T>` como el resto de la feature.
+
+> **Nombre al momento del envío (opcional).** Como el nombre sale de `dbo.users`, una persona que no está en el maestro aparece solo con su correo, y si alguien cambia de nombre se ve el nombre actual. Si eso importa, agrega `display_name NVARCHAR(256) NULL` a `email_alert_recipient` y llénalo al enviar: la consulta queda más simple y no depende del maestro.
+
+### Archivos
+
+```text
+DOCCB.Application/
+├── Contracts/Persistence/IEmailAlertLogQueryRepository.cs        nuevo
+└── Features/EmailAlerts/Application/
+    ├── DTOs/EmailAlertLogQueryDtos.cs                           nuevo
+    ├── Interfaces/IEmailAlertLogQueryService.cs                 nuevo
+    └── Services/EmailAlertLogQueryService.cs                    nuevo
+
+DOCCB.Infraestructure/Repositories/EmailAlertLogQueryRepository.cs   nuevo
+
+Presentation/WebApp/Controllers/EmailAlertLogsController.cs     nuevo — solo GET
+```
+
+### `DTOs/EmailAlertLogQueryDtos.cs`
+
+```csharp
+namespace DOCCB.Application.Features.EmailAlerts.Application.DTOs;
+
+/// <summary>Filtros que llegan por query string. Todos opcionales.</summary>
+public class EmailAlertLogQueryDto
+{
+    public string? Type { get; set; }
+    public string? Name { get; set; }
+    public string? Email { get; set; }
+    public int Page { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+}
+
+/// <summary>Filtros ya normalizados por el servicio.</summary>
+public sealed record EmailAlertLogFilter(string? Type, string? Name, string? Email, int Page, int PageSize);
+
+/// <summary>Un correo recibido por una persona.</summary>
+public class EmailAlertLogItemDto
+{
+    public int RecipientId { get; set; }
+    public int LogId { get; set; }
+    public string AlertType { get; set; } = string.Empty;
+    public int? AssignmentId { get; set; }
+    public DateTime SentDate { get; set; }
+    public string SendStatus { get; set; } = string.Empty;
+    public string? ErrorMessage { get; set; }
+    public string RecipientEmail { get; set; } = string.Empty;
+    /// <summary>De dbo.users. null si la persona no está en el maestro.</summary>
+    public string? RecipientName { get; set; }
+}
+
+public class EmailAlertLogPageDto
+{
+    public List<EmailAlertLogItemDto> Items { get; set; } = [];
+    public int TotalCount { get; set; }
+}
+```
+
+### `Contracts/Persistence/IEmailAlertLogQueryRepository.cs`
+
+```csharp
+using DOCCB.Application.Features.EmailAlerts.Application.DTOs;
+
+namespace DOCCB.Application.Contracts.Persistence;
+
+/// <summary>Solo lectura: consultas de la pantalla "Registro de correos".</summary>
+public interface IEmailAlertLogQueryRepository
+{
+    Task<EmailAlertLogPageDto> GetPageAsync(EmailAlertLogFilter filter, CancellationToken ct);
+
+    /// <summary>Tipos de alerta que existen en el log, para el filtro.</summary>
+    Task<List<string>> GetAlertTypesAsync(CancellationToken ct);
+}
+```
+
+### `Repositories/EmailAlertLogQueryRepository.cs`
+
+```csharp
+using DOCCB.Application.Contracts.Persistence;
+using DOCCB.Application.Features.EmailAlerts.Application.DTOs;
+using DOCCB.Domain.Entities;
+using DOCCB.Infraestructure.Common;
+using DOCCB.Infraestructure.Persistence.Models;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+
+namespace DOCCB.Infraestructure.Repositories;
+
+/// <summary>Tabla principal: email_alert_recipient (una fila por persona). Solo lectura.</summary>
+public class EmailAlertLogQueryRepository(DOCCbDbContext context)
+    : GenericRepositoryBase<DOCCbDbContext, EmailAlertRecipient>(context), IEmailAlertLogQueryRepository
+{
+    public Task<EmailAlertLogPageDto> GetPageAsync(EmailAlertLogFilter filter, CancellationToken ct) =>
+        Guard(() => BuildPageAsync(filter, ct));
+
+    public Task<List<string>> GetAlertTypesAsync(CancellationToken ct) =>
+        Guard(() => _context.Set<EmailAlertLog>()
+            .AsNoTracking()
+            .Select(log => log.AlertType)
+            .Distinct()
+            .OrderBy(type => type)
+            .ToListAsync(ct)); // usa ix_email_alert_log_alert_type
+
+    private async Task<EmailAlertLogPageDto> BuildPageAsync(EmailAlertLogFilter filter, CancellationToken ct)
+    {
+        var users = _context.Set<User>().AsNoTracking();
+        var recipients = _dbSet.AsNoTracking();
+
+        if (filter.Type is { } type)
+            recipients = recipients.Where(r => r.EmailAlertLog.AlertType == type);
+
+        // "Empieza por": aprovecha ix_email_alert_recipient_email. Un correo completo también coincide.
+        if (filter.Email is { } email)
+            recipients = recipients.Where(r => r.Email.StartsWith(email));
+
+        // El nombre no está en la tabla: se busca en el maestro por el correo.
+        if (filter.Name is { } name)
+            recipients = recipients.Where(r => users.Any(u => u.CorportativeEmail == r.Email && u.DisplayName.Contains(name)));
+
+        var total = await recipients.CountAsync(ct);
+
+        var items = await recipients
+            .OrderByDescending(r => r.EmailAlertLog.SentDate)
+            .ThenByDescending(r => r.Id)
+            .Skip((filter.Page - 1) * filter.PageSize)
+            .Take(filter.PageSize)
+            .Select(r => new EmailAlertLogItemDto
+            {
+                RecipientId = r.Id,
+                LogId = r.EmailAlertLogId,
+                AlertType = r.EmailAlertLog.AlertType,
+                AssignmentId = r.EmailAlertLog.AssignmentId,
+                SentDate = r.EmailAlertLog.SentDate,
+                SendStatus = r.EmailAlertLog.SendStatus,
+                ErrorMessage = r.EmailAlertLog.ErrorMessage,
+                RecipientEmail = r.Email,
+                // Subconsulta con TOP 1: si el maestro tuviera el correo repetido, no duplica filas.
+                RecipientName = users
+                    .Where(u => u.CorportativeEmail == r.Email)
+                    .Select(u => u.DisplayName)
+                    .FirstOrDefault(),
+            })
+            .ToListAsync(ct);
+
+        return new EmailAlertLogPageDto { Items = items, TotalCount = total };
+    }
+
+    /// <summary>Convención de GenericRepositoryBase; la cancelación pasa sin envolver.</summary>
+    private static async Task<TResult> Guard<TResult>(Func<Task<TResult>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (Exception ex) when (ex is not (OperationCanceledException or DbUpdateException or SqlException or TimeoutException))
+        {
+            throw new InvalidOperationException($"Error en el repositorio para la entidad {nameof(EmailAlertRecipient)}.", ex);
+        }
+    }
+}
+```
+
+> `DisplayName` y `CorportativeEmail` son los nombres de la entidad `User` en tu código. Si el nombre está en otra propiedad, cámbialo en las dos líneas que lo usan.
+
+### `Interfaces/IEmailAlertLogQueryService.cs`
+
+```csharp
+using DOCCB.Application.Features.EmailAlerts.Application.DTOs;
+
+namespace DOCCB.Application.Features.EmailAlerts.Application.Interfaces;
+
+public interface IEmailAlertLogQueryService
+{
+    Task<ResponseDto<EmailAlertLogPageDto>> GetPageAsync(EmailAlertLogQueryDto query, CancellationToken ct = default);
+    Task<ResponseDto<List<string>>> GetAlertTypesAsync(CancellationToken ct = default);
+}
+```
+
+### `Services/EmailAlertLogQueryService.cs`
+
+```csharp
+using DOCCB.Application.Contracts.Persistence;
+using DOCCB.Application.Features.EmailAlerts.Application.DTOs;
+using DOCCB.Application.Features.EmailAlerts.Application.Interfaces;
+
+namespace DOCCB.Application.Features.EmailAlerts.Application.Services;
+
+public class EmailAlertLogQueryService(IEmailAlertLogQueryRepository repository) : IEmailAlertLogQueryService
+{
+    private const int MaxTermLength = 100;
+
+    public async Task<ResponseDto<EmailAlertLogPageDto>> GetPageAsync(EmailAlertLogQueryDto query, CancellationToken ct = default)
+    {
+        var filter = new EmailAlertLogFilter(
+            Type: Clean(query.Type)?.ToUpperInvariant(),
+            Name: Clean(query.Name),
+            Email: Clean(query.Email)?.ToLowerInvariant(), // los destinatarios se guardan en minúsculas
+            Page: Math.Max(1, query.Page),
+            PageSize: Math.Clamp(query.PageSize, 1, 100));
+
+        var page = await repository.GetPageAsync(filter, ct);
+        return ResponseDtoHelper.CreateSuccessResponseDto(page);
+    }
+
+    public async Task<ResponseDto<List<string>>> GetAlertTypesAsync(CancellationToken ct = default) =>
+        ResponseDtoHelper.CreateSuccessResponseDto(await repository.GetAlertTypesAsync(ct));
+
+    /// <summary>Vacío = sin filtro. Recorta textos muy largos para no armar consultas costosas.</summary>
+    private static string? Clean(string? value)
+    {
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return null;
+        return trimmed.Length > MaxTermLength ? trimmed[..MaxTermLength] : trimmed;
+    }
+}
+```
+
+### `Controllers/EmailAlertLogsController.cs`
+
+Mismo estilo que `RequestController`: el servicio devuelve `ResponseDto<T>` y el controlador traduce excepciones a HTTP.
+
+```csharp
+using DOCCB.Application.Features.EmailAlerts.Application.DTOs;
+using DOCCB.Application.Features.EmailAlerts.Application.Interfaces;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace WebApp.Controllers;
+
+/// <summary>
+/// Solo lectura. Muestra correos de personas: protégelo con el mismo permiso de administración
+/// que usan tus otros controladores (⬇ agrega aquí tu atributo o política).
+/// </summary>
+[ApiController]
+[Route("api/email-alert-logs")]
+[Authorize]
+public class EmailAlertLogsController(
+    IEmailAlertLogQueryService service,
+    ILogger<EmailAlertLogsController> logger) : ControllerBase
+{
+    /// <summary>GET api/email-alert-logs?type=&name=&email=&page=&pageSize=</summary>
+    [HttpGet]
+    public async Task<IActionResult> GetPage([FromQuery] EmailAlertLogQueryDto query, CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await service.GetPageAsync(query, ct));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Error consultando el registro de correos.");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "No se pudo consultar el registro de correos." });
+        }
+    }
+
+    [HttpGet("types")]
+    public async Task<IActionResult> GetTypes(CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await service.GetAlertTypesAsync(ct));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex, "Error consultando los tipos de alerta.");
+            return StatusCode(StatusCodes.Status500InternalServerError, new { message = "No se pudieron consultar los tipos de alerta." });
+        }
+    }
+}
+```
+
+### Registro
+
+```csharp
+// ApplicationServiceRegistration.cs
+services.AddScoped<IEmailAlertLogQueryService, EmailAlertLogQueryService>();
+
+// InfrastructureServiceRegistration.cs
+services.AddScoped<IEmailAlertLogQueryRepository, EmailAlertLogQueryRepository>();
+```
+
+### Contrato
+
+| Método | Ruta | Respuesta |
+|---|---|---|
+| `GET` | `/api/email-alert-logs?type=&name=&email=&page=1&pageSize=20` | `ResponseDto<{ items: [...], totalCount }>`, más recientes primero |
+| `GET` | `/api/email-alert-logs/types` | `ResponseDto<string[]>` con los tipos que existen en el log |
+
+### Pruebas de la consulta
+
+- Sin filtros → todas las filas, más recientes primero, con `totalCount`.
+- `email=ana@` → solo destinatarios cuyo correo empieza por `ana@`; mayúsculas o minúsculas da igual.
+- `name=pérez` → solo destinatarios cuyo correo está en `dbo.users` con ese nombre.
+- Destinatario que no está en el maestro → aparece con `recipientName = null`; el filtro por nombre no lo encuentra.
+- `pageSize=1000` → se recorta a 100.
+
+---
+
 ## ✅ Checklist
 
 - [ ] Ajuste de la llave a `ON DELETE SET NULL` ejecutado (o `DeleteBehavior.NoAction` en la configuración, y el editor de cursos bloqueando ese caso).
@@ -571,5 +883,6 @@ ORDER BY l.sent_date DESC;
 - [ ] `EmailAlertTypes` con un valor por cada correo del sistema.
 - [ ] `IEmailAlertLogService` registrado en `ApplicationServiceRegistration.cs`.
 - [ ] Los servicios envían **después** de guardar el negocio y usan la lista normalizada que recibe `send`.
-- [ ] Sin controlador, sin repositorio propio.
+- [ ] Registro de envíos sin controlador y con el repositorio genérico.
+- [ ] Consulta de la pantalla con `IEmailAlertLogQueryRepository` (solo lectura) y `EmailAlertLogsController` protegido con el permiso de administración.
 - [ ] Política de retención de los logs acordada.
