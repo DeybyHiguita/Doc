@@ -9,7 +9,9 @@ API para la pestaña **Categorías** del administrador de Puntos Dorados:
 | **Biblioteca de iconos y colores** | catálogo de iconos con etiqueta, grupo y palabras de búsqueda; paleta de colores | consultar para el selector de la pantalla |
 
 - **Solo backend.** La sección 9 explica qué necesita Angular para el selector de iconos y colores, sin construir la pantalla.
-- **Convenciones:** las confirmadas en el código ([referencia-estilos-y-capas-doccb.md](referencia-estilos-y-capas-doccb.md), sección 4).
+- **Convenciones:** [convenciones-backend-doccb.md](.claude/convenciones-backend-doccb.md) (patrón estándar de Request).
+
+> **Versión corregida (6 oct 2026).** La primera versión usaba `ServiceResult<T>`, `WriteOutcome`, `TimeProvider` y controladores con `ExecuteAsync`. Para que compilara y siguiera el patrón estándar del proyecto se cambió a: servicios con `ResponseDto<T>` y toda la lógica dentro de la lambda del helper, `DateTime.UtcNow`, controladores de Request (`api/[controller]` + `try/catch`) y `DbSet` en el `DbContext`. Esta guía ya refleja ese código.
 - **El JSON coincide con tu `puntos-dorados.ts`:** `GoldenRecognitionCategory` (`id, name, description, icon, color, status`) y `GoldenProductCategory` (`id, name, description, status`), con `status` = `'Activa' | 'Inactiva'`. El frontend no necesita mapper.
 
 ---
@@ -58,8 +60,7 @@ DOCCB.Application/Features/GoldenPoints/Application/
 ├── Dtos/GoldenCategoryDtos.cs
 ├── Helpers/
 │   ├── GoldenCategoryValidator.cs         limpia y valida nombre, descripción, icono y color
-│   ├── GoldenCategoryMapper.cs            entidad → DTO
-│   └── WriteOutcome.cs                    resultado de una escritura dentro del helper
+│   └── GoldenCategoryMapper.cs            entidad → DTO
 ├── Interfaces/
 │   ├── IGoldenRecognitionCategoryService.cs
 │   └── IGoldenProductCategoryService.cs
@@ -71,16 +72,20 @@ DOCCB.Infraestructure/
 ├── Configurations/
 │   ├── GoldenRecognitionCategoryConfiguration.cs
 │   └── GoldenProductCategoryConfiguration.cs
-└── Persistence/Scripts SQL/GoldenPointsCategories.sql
+└── Persistence/
+    ├── Models/DOCCbDbContext.cs                ✏️ + 2 DbSet
+    └── Scripts SQL/GoldenPointsCategories.sql
 
 WebApp/
-├── Common/ApiResponseConstants.cs               ✏️ + 2 mensajes
+├── Common/ApiResponseConstants.cs               ✏️ + 3 mensajes
 └── Controllers/
     ├── GoldenRecognitionCategoriesController.cs
     └── GoldenProductCategoriesController.cs
 ```
 
 > La carpeta de DTOs de esta feature se llama `Dtos`, como en `EmailAlertLog`. Si prefieres `DTOs` como en `Common`, cambia carpeta y namespace juntos.
+>
+> **Namespaces en bloque.** En el proyecto se escribe `namespace X { … }`. Los bloques de las secciones 5 y 6 que usan `namespace X;` se copian igual, envolviendo la clase en llaves.
 
 ---
 
@@ -297,6 +302,15 @@ public class GoldenProductCategoryConfiguration : IEntityTypeConfiguration<Golde
 
 Las dos se cargan solas con `ApplyConfigurationsFromAssembly`.
 
+### `Persistence/Models/DOCCbDbContext.cs` ✏️
+
+Convención del proyecto: **cada entidad tiene su `DbSet`**, junto a los demás.
+
+```csharp
+public DbSet<GoldenRecognitionCategory> GoldenRecognitionCategories { get; set; }
+public DbSet<GoldenProductCategory> GoldenProductCategories { get; set; }
+```
+
 ---
 
 ## 6. Paso 3 — Constantes, catálogo y DTOs
@@ -304,30 +318,49 @@ Las dos se cargan solas con `ApplyConfigurationsFromAssembly`.
 ### `Constants/GoldenCategoryStatus.cs`
 
 ```csharp
-namespace DOCCB.Application.Features.GoldenPoints.Application.Constants;
-
-/// <summary>Los mismos textos que GoldenCategoryStatus del frontend: 'Activa' | 'Inactiva'.</summary>
-public static class GoldenCategoryStatus
+namespace DOCCB.Application.Features.GoldenPoints.Application.Constants
 {
-    public const string Active = "Activa";
-    public const string Inactive = "Inactiva";
-
-    public static string ToCode(bool active) => active ? Active : Inactive;
-
-    /// <summary>Vacío = todas. "Activa" / "Inactiva" sin distinguir mayúsculas. false = valor desconocido.</summary>
-    public static bool TryParseFilter(string? value, out bool? active)
+    /// <summary>Código textual de estado usado por el frontend: "Activa" / "Inactiva".</summary>
+    public static class GoldenCategoryStatus
     {
-        active = null;
-        if (string.IsNullOrWhiteSpace(value)) return true;
+        private const string ActiveCode = "Activa";
+        private const string InactiveCode = "Inactiva";
 
-        var text = value.Trim();
-        if (text.Equals(Active, StringComparison.OrdinalIgnoreCase)) { active = true; return true; }
-        if (text.Equals(Inactive, StringComparison.OrdinalIgnoreCase)) { active = false; return true; }
+        /// <summary>
+        /// Interpreta el filtro de estado recibido por query string.
+        /// null o vacío => sin filtro (active = null). "Activa"/"Inactiva" (sin distinguir mayúsculas).
+        /// Cualquier otro valor => inválido (devuelve false).
+        /// </summary>
+        public static bool TryParseFilter(string? status, out bool? active)
+        {
+            if (string.IsNullOrWhiteSpace(status))
+            {
+                active = null;
+                return true;
+            }
 
-        return false;
+            if (string.Equals(status, ActiveCode, StringComparison.OrdinalIgnoreCase))
+            {
+                active = true;
+                return true;
+            }
+
+            if (string.Equals(status, InactiveCode, StringComparison.OrdinalIgnoreCase))
+            {
+                active = false;
+                return true;
+            }
+
+            active = null;
+            return false;
+        }
+
+        public static string ToCode(bool active) => active ? ActiveCode : InactiveCode;
     }
 }
 ```
+
+> Al crear la clase desde Visual Studio, la plantilla genera `internal class` con `using System; using System.Linq; …`. Cámbiala a `public static class` y quita esos `using`: el proyecto tiene los `using` implícitos activos.
 
 ### `Constants/GoldenCategoryConstants.cs`
 
@@ -347,6 +380,7 @@ public static class GoldenCategoryConstants
     public const string IconNotInCatalog = "Ese icono no está en la biblioteca. Elige uno de la lista.";
     public const string ColorInvalid = "El color debe tener el formato #RRGGBB, por ejemplo #2563EB.";
     public const string InvalidStatusFilter = "El estado debe ser \"Activa\" o \"Inactiva\".";
+    public const string UnexpectedError = "No se pudo completar la operación. Intenta de nuevo.";
 
     public const string RecognitionCategoryNotFound = "La categoría de reconocimiento no existe.";
     public const string RecognitionCategoryNameTaken =
@@ -605,55 +639,30 @@ public static class GoldenCategoryMapper
 }
 ```
 
-### `Helpers/WriteOutcome.cs`
-
-El helper guarda **después** de la lambda, así que el `Id` de una entidad nueva solo existe cuando `ExecuteWithTransactionAsync` termina. La lambda devuelve la entidad (o el motivo del rechazo) y el DTO se arma afuera.
-
-```csharp
-using DOCCB.Application.Features.Common.Application.DTOs; // ServiceResult<T>, ServiceResultStatus
-
-namespace DOCCB.Application.Features.GoldenPoints.Application.Helpers;
-
-/// <summary>Resultado de la lambda de escritura: la entidad que se guardará o por qué no.</summary>
-public sealed record WriteOutcome<T>(T? Entity, ServiceResultStatus Status, string? Error) where T : class
-{
-    public static WriteOutcome<T> Ok(T entity) => new(entity, ServiceResultStatus.Ok, null);
-    public static WriteOutcome<T> Fail(ServiceResultStatus status, string error) => new(null, status, error);
-}
-
-public static class WriteOutcomeExtensions
-{
-    /// <summary>Llamar después de ExecuteWithTransactionAsync: la entidad ya tiene su Id.</summary>
-    public static ServiceResult<TDto> ToResult<T, TDto>(this WriteOutcome<T>? outcome, Func<T, TDto> map) where T : class =>
-        outcome?.Entity is { } entity
-            ? ServiceResult<TDto>.Ok(map(entity))
-            : ServiceResult<TDto>.Fail(
-                outcome?.Status ?? ServiceResultStatus.Unavailable,
-                outcome?.Error ?? "No se pudo completar la operación.");
-}
-```
-
 ### `Interfaces/IGoldenRecognitionCategoryService.cs`
 
 ```csharp
-using DOCCB.Application.Features.Common.Application.DTOs;
+using DOCCB.Application.Features.Common.Application.DTOs;     // ResponseDto<T>
 using DOCCB.Application.Features.GoldenPoints.Application.Dtos;
 
-namespace DOCCB.Application.Features.GoldenPoints.Application.Interfaces;
-
-public interface IGoldenRecognitionCategoryService
+namespace DOCCB.Application.Features.GoldenPoints.Application.Interfaces
 {
-    /// <param name="status">"Activa", "Inactiva" o vacío para todas.</param>
-    Task<ServiceResult<List<GoldenRecognitionCategoryDto>>> GetAllAsync(string? status);
-    Task<ServiceResult<GoldenRecognitionCategoryDto>> GetByIdAsync(int id);
-    Task<ServiceResult<GoldenRecognitionCategoryDto>> CreateAsync(SaveGoldenRecognitionCategoryDto dto, string currentUser);
-    Task<ServiceResult<GoldenRecognitionCategoryDto>> UpdateAsync(int id, SaveGoldenRecognitionCategoryDto dto, string currentUser);
-    Task<ServiceResult<GoldenRecognitionCategoryDto>> SetActiveAsync(int id, bool active, string currentUser);
-    ServiceResult<GoldenAppearanceOptionsDto> GetAppearanceOptions();
+    public interface IGoldenRecognitionCategoryService
+    {
+        /// <param name="status">"Activa", "Inactiva" o vacío para todas.</param>
+        Task<ResponseDto<List<GoldenRecognitionCategoryDto>>> GetAllAsync(string? status);
+        Task<ResponseDto<GoldenRecognitionCategoryDto>> GetByIdAsync(int id);
+        Task<ResponseDto<GoldenRecognitionCategoryDto>> CreateAsync(SaveGoldenRecognitionCategoryDto dto, string currentUser);
+        Task<ResponseDto<GoldenRecognitionCategoryDto>> UpdateAsync(int id, SaveGoldenRecognitionCategoryDto dto, string currentUser);
+        Task<ResponseDto<GoldenRecognitionCategoryDto>> SetActiveAsync(int id, bool active, string currentUser);
+        ResponseDto<GoldenAppearanceOptionsDto> GetAppearanceOptions();
+    }
 }
 ```
 
 ### `Services/GoldenRecognitionCategoryService.cs`
+
+El patrón estándar: **toda** la lógica con datos va dentro de la lambda del helper, que devuelve el `ResponseDto`. El `?? CreateErrorResponseDto(...)` cubre el caso en que el helper devuelva `null`.
 
 ```csharp
 using DOCCB.Application.Features.Common.Application.DTOs;
@@ -664,153 +673,189 @@ using DOCCB.Application.Features.GoldenPoints.Application.Helpers;
 using DOCCB.Application.Features.GoldenPoints.Application.Interfaces;
 using DOCCB.Domain.Entities;
 
-namespace DOCCB.Application.Features.GoldenPoints.Application.Services;
-
-public class GoldenRecognitionCategoryService(
-    ITransactionExecutorHelper transactionHelper,
-    TimeProvider timeProvider) : IGoldenRecognitionCategoryService
+namespace DOCCB.Application.Features.GoldenPoints.Application.Services
 {
-    public async Task<ServiceResult<List<GoldenRecognitionCategoryDto>>> GetAllAsync(string? status)
+    public class GoldenRecognitionCategoryService(ITransactionExecutorHelper transactionHelper) : IGoldenRecognitionCategoryService
     {
-        if (!GoldenCategoryStatus.TryParseFilter(status, out var active))
-            return ServiceResult<List<GoldenRecognitionCategoryDto>>.Fail(ServiceResultStatus.Invalid, GoldenCategoryConstants.InvalidStatusFilter);
+        private readonly ITransactionExecutorHelper _transactionHelper = transactionHelper;
 
-        var categories = await transactionHelper.ExecuteQueryAsync<List<GoldenRecognitionCategory>>(async unitOfWork =>
-            (await unitOfWork.Repository<GoldenRecognitionCategory>()
-                .GetListAsync(c => active == null || c.Active == active))
-                .ToList());
-
-        // Tabla pequeña: se ordena en memoria. Activas primero, luego por nombre.
-        var result = (categories ?? [])
-            .OrderByDescending(c => c.Active)
-            .ThenBy(c => c.Name)
-            .Select(GoldenCategoryMapper.ToRecognitionDto)
-            .ToList();
-
-        return ServiceResult<List<GoldenRecognitionCategoryDto>>.Ok(result);
-    }
-
-    public async Task<ServiceResult<GoldenRecognitionCategoryDto>> GetByIdAsync(int id)
-    {
-        var category = await transactionHelper.ExecuteQueryAsync<GoldenRecognitionCategory>(unitOfWork =>
-            unitOfWork.Repository<GoldenRecognitionCategory>().GetByIdAsync(id));
-
-        return category is null
-            ? ServiceResult<GoldenRecognitionCategoryDto>.Fail(ServiceResultStatus.NotFound, GoldenCategoryConstants.RecognitionCategoryNotFound)
-            : ServiceResult<GoldenRecognitionCategoryDto>.Ok(GoldenCategoryMapper.ToRecognitionDto(category));
-    }
-
-    public async Task<ServiceResult<GoldenRecognitionCategoryDto>> CreateAsync(SaveGoldenRecognitionCategoryDto dto, string currentUser)
-    {
-        var errors = new List<string>();
-        var name = GoldenCategoryValidator.Name(dto.Name, errors);
-        var description = GoldenCategoryValidator.Description(dto.Description, errors);
-        var icon = GoldenCategoryValidator.Icon(dto.Icon, errors);
-        var color = GoldenCategoryValidator.Color(dto.Color, errors);
-
-        if (icon is not null && !GoldenAppearanceCatalog.IsKnownIcon(icon))
-            errors.Add(GoldenCategoryConstants.IconNotInCatalog);
-
-        if (errors.Count > 0)
-            return ServiceResult<GoldenRecognitionCategoryDto>.Fail(ServiceResultStatus.Invalid, errors);
-
-        var outcome = await transactionHelper.ExecuteWithTransactionAsync<WriteOutcome<GoldenRecognitionCategory>>(async unitOfWork =>
+        public async Task<ResponseDto<List<GoldenRecognitionCategoryDto>>> GetAllAsync(string? status)
         {
-            var repository = unitOfWork.Repository<GoldenRecognitionCategory>();
-
-            if (await repository.AnyAsync(c => c.Name == name))
-                return WriteOutcome<GoldenRecognitionCategory>.Fail(ServiceResultStatus.Conflict, GoldenCategoryConstants.RecognitionCategoryNameTaken);
-
-            var category = new GoldenRecognitionCategory
+            if (!GoldenCategoryStatus.TryParseFilter(status, out var active))
             {
-                Name = name!,
-                Description = description,
-                Icon = icon!,
-                Color = color!,
-                Active = true,
-                CreatedDate = Now(),
-                CreatedBy = currentUser,
-            };
-
-            await repository.AddAsync(category);
-            return WriteOutcome<GoldenRecognitionCategory>.Ok(category); // el Id se llena cuando el helper guarda
-        });
-
-        return outcome.ToResult(GoldenCategoryMapper.ToRecognitionDto);
-    }
-
-    public async Task<ServiceResult<GoldenRecognitionCategoryDto>> UpdateAsync(int id, SaveGoldenRecognitionCategoryDto dto, string currentUser)
-    {
-        var errors = new List<string>();
-        var name = GoldenCategoryValidator.Name(dto.Name, errors);
-        var description = GoldenCategoryValidator.Description(dto.Description, errors);
-        var icon = GoldenCategoryValidator.Icon(dto.Icon, errors);
-        var color = GoldenCategoryValidator.Color(dto.Color, errors);
-
-        if (errors.Count > 0)
-            return ServiceResult<GoldenRecognitionCategoryDto>.Fail(ServiceResultStatus.Invalid, errors);
-
-        var outcome = await transactionHelper.ExecuteWithTransactionAsync<WriteOutcome<GoldenRecognitionCategory>>(async unitOfWork =>
-        {
-            var repository = unitOfWork.Repository<GoldenRecognitionCategory>();
-
-            // GetByIdAsync trae la entidad CON seguimiento: el helper guarda solo lo que cambie.
-            var category = await repository.GetByIdAsync(id);
-            if (category is null)
-                return WriteOutcome<GoldenRecognitionCategory>.Fail(ServiceResultStatus.NotFound, GoldenCategoryConstants.RecognitionCategoryNotFound);
-
-            // El icono que ya tenía se respeta aunque no esté en el catálogo (datos anteriores).
-            if (icon != category.Icon && !GoldenAppearanceCatalog.IsKnownIcon(icon!))
-                return WriteOutcome<GoldenRecognitionCategory>.Fail(ServiceResultStatus.Invalid, GoldenCategoryConstants.IconNotInCatalog);
-
-            if (await repository.AnyAsync(c => c.Name == name && c.Id != id))
-                return WriteOutcome<GoldenRecognitionCategory>.Fail(ServiceResultStatus.Conflict, GoldenCategoryConstants.RecognitionCategoryNameTaken);
-
-            category.Name = name!;
-            category.Description = description;
-            category.Icon = icon!;
-            category.Color = color!;
-            category.UpdatedDate = Now();
-            category.UpdatedBy = currentUser;
-
-            // Sin UpdateAsync: marcaría todas las columnas como modificadas. La entidad ya está siendo seguida.
-            return WriteOutcome<GoldenRecognitionCategory>.Ok(category);
-        });
-
-        return outcome.ToResult(GoldenCategoryMapper.ToRecognitionDto);
-    }
-
-    public async Task<ServiceResult<GoldenRecognitionCategoryDto>> SetActiveAsync(int id, bool active, string currentUser)
-    {
-        var outcome = await transactionHelper.ExecuteWithTransactionAsync<WriteOutcome<GoldenRecognitionCategory>>(async unitOfWork =>
-        {
-            var category = await unitOfWork.Repository<GoldenRecognitionCategory>().GetByIdAsync(id);
-            if (category is null)
-                return WriteOutcome<GoldenRecognitionCategory>.Fail(ServiceResultStatus.NotFound, GoldenCategoryConstants.RecognitionCategoryNotFound);
-
-            if (category.Active != active) // si ya estaba así, no hay nada que guardar
-            {
-                category.Active = active;
-                category.UpdatedDate = Now();
-                category.UpdatedBy = currentUser;
+                return ResponseDtoHelper.CreateErrorResponseDto<List<GoldenRecognitionCategoryDto>>(GoldenCategoryConstants.InvalidStatusFilter);
             }
 
-            return WriteOutcome<GoldenRecognitionCategory>.Ok(category);
-        });
+            return await _transactionHelper.ExecuteQueryAsync<ResponseDto<List<GoldenRecognitionCategoryDto>>>(
+                async unitOfWork =>
+                {
+                    var categories = await unitOfWork.Repository<GoldenRecognitionCategory>()
+                        .GetListAsync(c => active == null || c.Active == active);
 
-        return outcome.ToResult(GoldenCategoryMapper.ToRecognitionDto);
-    }
+                    // Tabla pequeña: se ordena en memoria. Activas primero, luego por nombre.
+                    var result = categories
+                        .OrderByDescending(c => c.Active)
+                        .ThenBy(c => c.Name)
+                        .Select(GoldenCategoryMapper.ToRecognitionDto)
+                        .ToList();
 
-    public ServiceResult<GoldenAppearanceOptionsDto> GetAppearanceOptions() =>
-        ServiceResult<GoldenAppearanceOptionsDto>.Ok(new GoldenAppearanceOptionsDto
+                    return ResponseDtoHelper.CreateSuccessResponseDto(result);
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<List<GoldenRecognitionCategoryDto>>(GoldenCategoryConstants.UnexpectedError);
+        }
+
+        public async Task<ResponseDto<GoldenRecognitionCategoryDto>> GetByIdAsync(int id)
         {
-            Icons = GoldenAppearanceCatalog.Icons,
-            Colors = GoldenAppearanceCatalog.Colors,
-        });
+            return await _transactionHelper.ExecuteQueryAsync<ResponseDto<GoldenRecognitionCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var category = await unitOfWork.Repository<GoldenRecognitionCategory>().GetByIdAsync(id);
 
-    private DateTime Now() => timeProvider.GetUtcNow().UtcDateTime;
+                    return category is null
+                        ? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.RecognitionCategoryNotFound)
+                        : ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToRecognitionDto(category));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+        }
+
+        public async Task<ResponseDto<GoldenRecognitionCategoryDto>> CreateAsync(SaveGoldenRecognitionCategoryDto dto, string currentUser)
+        {
+            var errors = new List<string>();
+            var name = GoldenCategoryValidator.Name(dto.Name, errors);
+            var description = GoldenCategoryValidator.Description(dto.Description, errors);
+            var icon = GoldenCategoryValidator.Icon(dto.Icon, errors);
+            var color = GoldenCategoryValidator.Color(dto.Color, errors);
+
+            if (icon is not null && !GoldenAppearanceCatalog.IsKnownIcon(icon))
+            {
+                errors.Add(GoldenCategoryConstants.IconNotInCatalog);
+            }
+
+            if (errors.Count > 0)
+            {
+                return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(errors);
+            }
+
+            GoldenRecognitionCategory? created = null;
+
+            var response = await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenRecognitionCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var repository = unitOfWork.Repository<GoldenRecognitionCategory>();
+
+                    if (await repository.AnyAsync(c => c.Name == name))
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.RecognitionCategoryNameTaken);
+                    }
+
+                    created = new GoldenRecognitionCategory
+                    {
+                        Name = name!,
+                        Description = description,
+                        Icon = icon!,
+                        Color = color!,
+                        Active = true,
+                        CreatedDate = DateTime.UtcNow,
+                        CreatedBy = currentUser,
+                    };
+
+                    await repository.AddAsync(created);
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToRecognitionDto(created));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+
+            // ⚠️ El helper guarda DESPUÉS de la lambda: dentro de ella el Id todavía es 0.
+            // Se vuelve a mapear aquí para que la respuesta lleve el Id real.
+            return created is not null && !response.HasError
+                ? ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToRecognitionDto(created))
+                : response;
+        }
+
+        public async Task<ResponseDto<GoldenRecognitionCategoryDto>> UpdateAsync(int id, SaveGoldenRecognitionCategoryDto dto, string currentUser)
+        {
+            var errors = new List<string>();
+            var name = GoldenCategoryValidator.Name(dto.Name, errors);
+            var description = GoldenCategoryValidator.Description(dto.Description, errors);
+            var icon = GoldenCategoryValidator.Icon(dto.Icon, errors);
+            var color = GoldenCategoryValidator.Color(dto.Color, errors);
+
+            if (errors.Count > 0)
+            {
+                return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(errors);
+            }
+
+            return await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenRecognitionCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var repository = unitOfWork.Repository<GoldenRecognitionCategory>();
+
+                    // GetByIdAsync trae la entidad CON seguimiento: se guarda solo lo que cambie.
+                    var category = await repository.GetByIdAsync(id);
+                    if (category is null)
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.RecognitionCategoryNotFound);
+                    }
+
+                    // El icono que ya tenía se respeta aunque no esté en el catálogo (datos anteriores).
+                    if (icon != category.Icon && !GoldenAppearanceCatalog.IsKnownIcon(icon!))
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.IconNotInCatalog);
+                    }
+
+                    if (await repository.AnyAsync(c => c.Name == name && c.Id != id))
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.RecognitionCategoryNameTaken);
+                    }
+
+                    category.Name = name!;
+                    category.Description = description;
+                    category.Icon = icon!;
+                    category.Color = color!;
+                    category.UpdatedDate = DateTime.UtcNow;
+                    category.UpdatedBy = currentUser;
+
+                    // Aquí el Id ya existe (la entidad se leyó), así que mapear dentro de la lambda es correcto.
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToRecognitionDto(category));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+        }
+
+        public async Task<ResponseDto<GoldenRecognitionCategoryDto>> SetActiveAsync(int id, bool active, string currentUser)
+        {
+            return await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenRecognitionCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var category = await unitOfWork.Repository<GoldenRecognitionCategory>().GetByIdAsync(id);
+                    if (category is null)
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.RecognitionCategoryNotFound);
+                    }
+
+                    if (category.Active != active) // si ya estaba así, no hay nada que guardar
+                    {
+                        category.Active = active;
+                        category.UpdatedDate = DateTime.UtcNow;
+                        category.UpdatedBy = currentUser;
+                    }
+
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToRecognitionDto(category));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+        }
+
+        public ResponseDto<GoldenAppearanceOptionsDto> GetAppearanceOptions() =>
+            ResponseDtoHelper.CreateSuccessResponseDto(new GoldenAppearanceOptionsDto
+            {
+                Icons = GoldenAppearanceCatalog.Icons,
+                Colors = GoldenAppearanceCatalog.Colors,
+            });
+    }
 }
 ```
+
+> **El Id al crear.** Si se devuelve el DTO armado dentro de la lambda, la respuesta de `POST` trae `id: 0`: el `INSERT` ocurre en el `CompleteAsync` del helper, después de la lambda. Por eso `CreateAsync` guarda la entidad en `created` y vuelve a mapear al final. En `UpdateAsync` y `SetActiveAsync` no hace falta porque la entidad ya existía.
+>
+> `ResponseDtoHelper.CreateErrorResponseDto<T>(errors)` recibe la lista de errores de validación; con un solo mensaje se usa la sobrecarga de `string`.
 
 ### `Interfaces/IGoldenProductCategoryService.cs`
 
@@ -818,21 +863,21 @@ public class GoldenRecognitionCategoryService(
 using DOCCB.Application.Features.Common.Application.DTOs;
 using DOCCB.Application.Features.GoldenPoints.Application.Dtos;
 
-namespace DOCCB.Application.Features.GoldenPoints.Application.Interfaces;
-
-public interface IGoldenProductCategoryService
+namespace DOCCB.Application.Features.GoldenPoints.Application.Interfaces
 {
-    Task<ServiceResult<List<GoldenProductCategoryDto>>> GetAllAsync(string? status);
-    Task<ServiceResult<GoldenProductCategoryDto>> GetByIdAsync(int id);
-    Task<ServiceResult<GoldenProductCategoryDto>> CreateAsync(SaveGoldenProductCategoryDto dto, string currentUser);
-    Task<ServiceResult<GoldenProductCategoryDto>> UpdateAsync(int id, SaveGoldenProductCategoryDto dto, string currentUser);
-    Task<ServiceResult<GoldenProductCategoryDto>> SetActiveAsync(int id, bool active, string currentUser);
+    public interface IGoldenProductCategoryService
+    {
+        /// <param name="status">"Activa", "Inactiva" o vacío para todas.</param>
+        Task<ResponseDto<List<GoldenProductCategoryDto>>> GetAllAsync(string? status);
+        Task<ResponseDto<GoldenProductCategoryDto>> GetByIdAsync(int id);
+        Task<ResponseDto<GoldenProductCategoryDto>> CreateAsync(SaveGoldenProductCategoryDto dto, string currentUser);
+        Task<ResponseDto<GoldenProductCategoryDto>> UpdateAsync(int id, SaveGoldenProductCategoryDto dto, string currentUser);
+        Task<ResponseDto<GoldenProductCategoryDto>> SetActiveAsync(int id, bool active, string currentUser);
+    }
 }
 ```
 
 ### `Services/GoldenProductCategoryService.cs`
-
-El mismo patrón, sin icono ni color.
 
 ```csharp
 using DOCCB.Application.Features.Common.Application.DTOs;
@@ -843,138 +888,165 @@ using DOCCB.Application.Features.GoldenPoints.Application.Helpers;
 using DOCCB.Application.Features.GoldenPoints.Application.Interfaces;
 using DOCCB.Domain.Entities;
 
-namespace DOCCB.Application.Features.GoldenPoints.Application.Services;
-
-public class GoldenProductCategoryService(
-    ITransactionExecutorHelper transactionHelper,
-    TimeProvider timeProvider) : IGoldenProductCategoryService
+namespace DOCCB.Application.Features.GoldenPoints.Application.Services
 {
-    public async Task<ServiceResult<List<GoldenProductCategoryDto>>> GetAllAsync(string? status)
+    public class GoldenProductCategoryService(ITransactionExecutorHelper transactionHelper) : IGoldenProductCategoryService
     {
-        if (!GoldenCategoryStatus.TryParseFilter(status, out var active))
-            return ServiceResult<List<GoldenProductCategoryDto>>.Fail(ServiceResultStatus.Invalid, GoldenCategoryConstants.InvalidStatusFilter);
+        private readonly ITransactionExecutorHelper _transactionHelper = transactionHelper;
 
-        var categories = await transactionHelper.ExecuteQueryAsync<List<GoldenProductCategory>>(async unitOfWork =>
-            (await unitOfWork.Repository<GoldenProductCategory>()
-                .GetListAsync(c => active == null || c.Active == active))
-                .ToList());
-
-        var result = (categories ?? [])
-            .OrderByDescending(c => c.Active)
-            .ThenBy(c => c.Name)
-            .Select(GoldenCategoryMapper.ToProductDto)
-            .ToList();
-
-        return ServiceResult<List<GoldenProductCategoryDto>>.Ok(result);
-    }
-
-    public async Task<ServiceResult<GoldenProductCategoryDto>> GetByIdAsync(int id)
-    {
-        var category = await transactionHelper.ExecuteQueryAsync<GoldenProductCategory>(unitOfWork =>
-            unitOfWork.Repository<GoldenProductCategory>().GetByIdAsync(id));
-
-        return category is null
-            ? ServiceResult<GoldenProductCategoryDto>.Fail(ServiceResultStatus.NotFound, GoldenCategoryConstants.ProductCategoryNotFound)
-            : ServiceResult<GoldenProductCategoryDto>.Ok(GoldenCategoryMapper.ToProductDto(category));
-    }
-
-    public async Task<ServiceResult<GoldenProductCategoryDto>> CreateAsync(SaveGoldenProductCategoryDto dto, string currentUser)
-    {
-        var errors = new List<string>();
-        var name = GoldenCategoryValidator.Name(dto.Name, errors);
-        var description = GoldenCategoryValidator.Description(dto.Description, errors);
-
-        if (errors.Count > 0)
-            return ServiceResult<GoldenProductCategoryDto>.Fail(ServiceResultStatus.Invalid, errors);
-
-        var outcome = await transactionHelper.ExecuteWithTransactionAsync<WriteOutcome<GoldenProductCategory>>(async unitOfWork =>
+        public async Task<ResponseDto<List<GoldenProductCategoryDto>>> GetAllAsync(string? status)
         {
-            var repository = unitOfWork.Repository<GoldenProductCategory>();
-
-            if (await repository.AnyAsync(c => c.Name == name))
-                return WriteOutcome<GoldenProductCategory>.Fail(ServiceResultStatus.Conflict, GoldenCategoryConstants.ProductCategoryNameTaken);
-
-            var category = new GoldenProductCategory
+            if (!GoldenCategoryStatus.TryParseFilter(status, out var active))
             {
-                Name = name!,
-                Description = description,
-                Active = true,
-                CreatedDate = Now(),
-                CreatedBy = currentUser,
-            };
-
-            await repository.AddAsync(category);
-            return WriteOutcome<GoldenProductCategory>.Ok(category);
-        });
-
-        return outcome.ToResult(GoldenCategoryMapper.ToProductDto);
-    }
-
-    public async Task<ServiceResult<GoldenProductCategoryDto>> UpdateAsync(int id, SaveGoldenProductCategoryDto dto, string currentUser)
-    {
-        var errors = new List<string>();
-        var name = GoldenCategoryValidator.Name(dto.Name, errors);
-        var description = GoldenCategoryValidator.Description(dto.Description, errors);
-
-        if (errors.Count > 0)
-            return ServiceResult<GoldenProductCategoryDto>.Fail(ServiceResultStatus.Invalid, errors);
-
-        var outcome = await transactionHelper.ExecuteWithTransactionAsync<WriteOutcome<GoldenProductCategory>>(async unitOfWork =>
-        {
-            var repository = unitOfWork.Repository<GoldenProductCategory>();
-
-            var category = await repository.GetByIdAsync(id);
-            if (category is null)
-                return WriteOutcome<GoldenProductCategory>.Fail(ServiceResultStatus.NotFound, GoldenCategoryConstants.ProductCategoryNotFound);
-
-            if (await repository.AnyAsync(c => c.Name == name && c.Id != id))
-                return WriteOutcome<GoldenProductCategory>.Fail(ServiceResultStatus.Conflict, GoldenCategoryConstants.ProductCategoryNameTaken);
-
-            category.Name = name!;
-            category.Description = description;
-            category.UpdatedDate = Now();
-            category.UpdatedBy = currentUser;
-
-            return WriteOutcome<GoldenProductCategory>.Ok(category);
-        });
-
-        return outcome.ToResult(GoldenCategoryMapper.ToProductDto);
-    }
-
-    public async Task<ServiceResult<GoldenProductCategoryDto>> SetActiveAsync(int id, bool active, string currentUser)
-    {
-        var outcome = await transactionHelper.ExecuteWithTransactionAsync<WriteOutcome<GoldenProductCategory>>(async unitOfWork =>
-        {
-            var category = await unitOfWork.Repository<GoldenProductCategory>().GetByIdAsync(id);
-            if (category is null)
-                return WriteOutcome<GoldenProductCategory>.Fail(ServiceResultStatus.NotFound, GoldenCategoryConstants.ProductCategoryNotFound);
-
-            if (category.Active != active)
-            {
-                category.Active = active;
-                category.UpdatedDate = Now();
-                category.UpdatedBy = currentUser;
+                return ResponseDtoHelper.CreateErrorResponseDto<List<GoldenProductCategoryDto>>(GoldenCategoryConstants.InvalidStatusFilter);
             }
 
-            return WriteOutcome<GoldenProductCategory>.Ok(category);
-        });
+            return await _transactionHelper.ExecuteQueryAsync<ResponseDto<List<GoldenProductCategoryDto>>>(
+                async unitOfWork =>
+                {
+                    var categories = await unitOfWork.Repository<GoldenProductCategory>()
+                        .GetListAsync(c => active == null || c.Active == active);
 
-        return outcome.ToResult(GoldenCategoryMapper.ToProductDto);
+                    var result = categories
+                        .OrderByDescending(c => c.Active)
+                        .ThenBy(c => c.Name)
+                        .Select(GoldenCategoryMapper.ToProductDto)
+                        .ToList();
+
+                    return ResponseDtoHelper.CreateSuccessResponseDto(result);
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<List<GoldenProductCategoryDto>>(GoldenCategoryConstants.UnexpectedError);
+        }
+
+        public async Task<ResponseDto<GoldenProductCategoryDto>> GetByIdAsync(int id)
+        {
+            return await _transactionHelper.ExecuteQueryAsync<ResponseDto<GoldenProductCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var category = await unitOfWork.Repository<GoldenProductCategory>().GetByIdAsync(id);
+
+                    return category is null
+                        ? ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.ProductCategoryNotFound)
+                        : ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToProductDto(category));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+        }
+
+        public async Task<ResponseDto<GoldenProductCategoryDto>> CreateAsync(SaveGoldenProductCategoryDto dto, string currentUser)
+        {
+            var errors = new List<string>();
+            var name = GoldenCategoryValidator.Name(dto.Name, errors);
+            var description = GoldenCategoryValidator.Description(dto.Description, errors);
+
+            if (errors.Count > 0)
+            {
+                return ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(errors);
+            }
+
+            GoldenProductCategory? created = null;
+
+            var response = await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenProductCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var repository = unitOfWork.Repository<GoldenProductCategory>();
+
+                    if (await repository.AnyAsync(c => c.Name == name))
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.ProductCategoryNameTaken);
+                    }
+
+                    created = new GoldenProductCategory
+                    {
+                        Name = name!,
+                        Description = description,
+                        Active = true,
+                        CreatedDate = DateTime.UtcNow,
+                        CreatedBy = currentUser,
+                    };
+
+                    await repository.AddAsync(created);
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToProductDto(created));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+
+            // El Id real solo existe después de que el helper guarda.
+            return created is not null && !response.HasError
+                ? ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToProductDto(created))
+                : response;
+        }
+
+        public async Task<ResponseDto<GoldenProductCategoryDto>> UpdateAsync(int id, SaveGoldenProductCategoryDto dto, string currentUser)
+        {
+            var errors = new List<string>();
+            var name = GoldenCategoryValidator.Name(dto.Name, errors);
+            var description = GoldenCategoryValidator.Description(dto.Description, errors);
+
+            if (errors.Count > 0)
+            {
+                return ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(errors);
+            }
+
+            return await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenProductCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var repository = unitOfWork.Repository<GoldenProductCategory>();
+
+                    var category = await repository.GetByIdAsync(id);
+                    if (category is null)
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.ProductCategoryNotFound);
+                    }
+
+                    if (await repository.AnyAsync(c => c.Name == name && c.Id != id))
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.ProductCategoryNameTaken);
+                    }
+
+                    category.Name = name!;
+                    category.Description = description;
+                    category.UpdatedDate = DateTime.UtcNow;
+                    category.UpdatedBy = currentUser;
+
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToProductDto(category));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+        }
+
+        public async Task<ResponseDto<GoldenProductCategoryDto>> SetActiveAsync(int id, bool active, string currentUser)
+        {
+            return await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenProductCategoryDto>>(
+                async unitOfWork =>
+                {
+                    var category = await unitOfWork.Repository<GoldenProductCategory>().GetByIdAsync(id);
+                    if (category is null)
+                    {
+                        return ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.ProductCategoryNotFound);
+                    }
+
+                    if (category.Active != active)
+                    {
+                        category.Active = active;
+                        category.UpdatedDate = DateTime.UtcNow;
+                        category.UpdatedBy = currentUser;
+                    }
+
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenCategoryMapper.ToProductDto(category));
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenProductCategoryDto>(GoldenCategoryConstants.UnexpectedError);
+        }
     }
-
-    private DateTime Now() => timeProvider.GetUtcNow().UtcDateTime;
 }
 ```
 
-> **Firmas del repositorio genérico.** Se usan `GetListAsync(predicado)`, `GetByIdAsync(id)` (con seguimiento), `AnyAsync(predicado)` y `AddAsync(entidad)`, todas de tu `IGenericRepository<T>`. El `.ToList()` sobre `GetListAsync` funciona aunque devuelva `IReadOnlyList` o `IEnumerable`.
->
-> **Nombre repetido al mismo tiempo.** Si dos administradores crean el mismo nombre en el mismo segundo, el índice único rechaza el segundo y el helper responde con el error general (500). Es muy poco probable en una pantalla de configuración; no vale la pena más código.
+> **Nombre repetido al mismo tiempo.** Si dos administradores crean el mismo nombre en el mismo segundo, el índice único rechaza el segundo y el helper lanza `InvalidOperationException`: el controlador responde 500. Es muy poco probable en una pantalla de configuración.
 
 ---
 
-## 8. Paso 5 — Controladores
+## 8. Paso 5 — Controladores (patrón estándar de Request)
 
 ### `Common/ApiResponseConstants.cs` ✏️
+
+`NotAuthenticatedUserMessage` y `UnauthorizedUserMessage` ya existen. Se agregan:
 
 ```csharp
 public const string GoldenRecognitionCategoriesErrorMessage = "No se pudo completar la operación con las categorías de reconocimiento.";
@@ -982,6 +1054,8 @@ public const string GoldenProductCategoriesErrorMessage = "No se pudo completar 
 ```
 
 ### `Controllers/GoldenRecognitionCategoriesController.cs`
+
+Cada acción: lee el usuario del token, responde 401 si no hay correo, llama al servicio y devuelve `Ok(response)`. Los errores de negocio viajan en el `ResponseDto` con **HTTP 200** y `hasError: true`, como en Request.
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -995,17 +1069,11 @@ namespace DOCCB.WebApp.Controllers
 {
     /// <summary>Puntos Dorados: categorías de reconocimiento y biblioteca de iconos y colores.</summary>
     [ApiController]
-    [Route("api/golden-points/recognition-categories")]
+    [Route("api/[controller]")]
     [Authorize]
-    public class GoldenRecognitionCategoriesController(
-        IGoldenRecognitionCategoryService service,
-        ILogger<GoldenRecognitionCategoriesController> logger) : ControllerBase
+    public class GoldenRecognitionCategoriesController(IGoldenRecognitionCategoryService service) : ControllerBase
     {
         private readonly IGoldenRecognitionCategoryService _service = service;
-        private readonly ILogger<GoldenRecognitionCategoriesController> _logger = logger;
-
-        /// <summary>Correo del usuario autenticado, para created_by / updated_by.</summary>
-        private string CurrentUser => MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User).Email ?? string.Empty;
 
         /// <summary>GET ?status=Activa | Inactiva | (vacío = todas)</summary>
         [HttpGet]
@@ -1013,84 +1081,197 @@ namespace DOCCB.WebApp.Controllers
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetAll([FromQuery] string? status) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.GetAllAsync(status)),
-                ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> GetAll([FromQuery] string? status)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.GetAllAsync(status);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage });
+            }
+        }
 
         /// <summary>Iconos y colores para el selector de la pantalla.</summary>
         [HttpGet("appearance-options")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        public Task<IActionResult> GetAppearanceOptions() =>
-            this.ExecuteAsync(
-                _ => Task.FromResult<IActionResult>(this.ToActionResult(_service.GetAppearanceOptions())),
-                ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, _logger);
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public IActionResult GetAppearanceOptions()
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                return Ok(_service.GetAppearanceOptions());
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage });
+            }
+        }
 
         [HttpGet("{id:int}")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetById(int id) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.GetByIdAsync(id)),
-                ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> GetById(int id)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
 
-        // ⬇ Las acciones de escritura llevan el permiso de administración de Puntos Dorados
-        //   (agrega aquí el atributo o la política que usan tus otros controladores).
+                var response = await _service.GetByIdAsync(id);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage });
+            }
+        }
+
+        // ⬇ Escrituras con el permiso de administración de Puntos Dorados
+        //   (agrega el atributo o la política que usan tus otros controladores).
 
         [HttpPost]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        [ProducesResponseType(StatusCodes.Status409Conflict)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Create([FromBody] SaveGoldenRecognitionCategoryDto dto) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.CreateAsync(dto, CurrentUser)),
-                ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> Create([FromBody] SaveGoldenRecognitionCategoryDto dto)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.CreateAsync(dto, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage });
+            }
+        }
 
         [HttpPut("{id:int}")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
-        [ProducesResponseType(StatusCodes.Status409Conflict)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Update(int id, [FromBody] SaveGoldenRecognitionCategoryDto dto) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.UpdateAsync(id, dto, CurrentUser)),
-                ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> Update(int id, [FromBody] SaveGoldenRecognitionCategoryDto dto)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.UpdateAsync(id, dto, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage });
+            }
+        }
 
         [HttpPatch("{id:int}/inactivate")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Inactivate(int id) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.SetActiveAsync(id, active: false, CurrentUser)),
-                ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, _logger);
+        public Task<IActionResult> Inactivate(int id) => SetActive(id, active: false);
 
         [HttpPatch("{id:int}/activate")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Activate(int id) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.SetActiveAsync(id, active: true, CurrentUser)),
-                ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, _logger);
+        public Task<IActionResult> Activate(int id) => SetActive(id, active: true);
+
+        private async Task<IActionResult> SetActive(int id, bool active)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.SetActiveAsync(id, active, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage });
+            }
+        }
     }
 }
 ```
 
-> `MicrosoftUserAuthenticatorHelper` es el que usa `RequestController`. Si tu `ControllerExtensions` ya tiene `User.CurrentUserEmail()`, úsalo en su lugar y ajusta el `using`.
->
-> `appearance-options` va **antes** de `{id:int}` solo por orden de lectura: la restricción `:int` ya evita que choquen.
+> `Inactivate` y `Activate` comparten un método privado para no repetir el `try/catch`. Si en el proyecto prefieren cada acción completa, copia el cuerpo de `SetActive` en las dos.
 
 ### `Controllers/GoldenProductCategoriesController.cs`
+
+Igual al anterior, sin `appearance-options`, con `IGoldenProductCategoryService`, `SaveGoldenProductCategoryDto` y `ApiResponseConstants.GoldenProductCategoriesErrorMessage`:
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -1104,81 +1285,176 @@ namespace DOCCB.WebApp.Controllers
 {
     /// <summary>Puntos Dorados: categorías del catálogo de redención.</summary>
     [ApiController]
-    [Route("api/golden-points/product-categories")]
+    [Route("api/[controller]")]
     [Authorize]
-    public class GoldenProductCategoriesController(
-        IGoldenProductCategoryService service,
-        ILogger<GoldenProductCategoriesController> logger) : ControllerBase
+    public class GoldenProductCategoriesController(IGoldenProductCategoryService service) : ControllerBase
     {
         private readonly IGoldenProductCategoryService _service = service;
-        private readonly ILogger<GoldenProductCategoriesController> _logger = logger;
 
-        private string CurrentUser => MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User).Email ?? string.Empty;
-
+        /// <summary>GET ?status=Activa | Inactiva | (vacío = todas)</summary>
         [HttpGet]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetAll([FromQuery] string? status) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.GetAllAsync(status)),
-                ApiResponseConstants.GoldenProductCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> GetAll([FromQuery] string? status)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.GetAllAsync(status);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage });
+            }
+        }
 
         [HttpGet("{id:int}")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetById(int id) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.GetByIdAsync(id)),
-                ApiResponseConstants.GoldenProductCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> GetById(int id)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.GetByIdAsync(id);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage });
+            }
+        }
 
         // ⬇ Escrituras con el permiso de administración de Puntos Dorados.
 
         [HttpPost]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        [ProducesResponseType(StatusCodes.Status409Conflict)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Create([FromBody] SaveGoldenProductCategoryDto dto) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.CreateAsync(dto, CurrentUser)),
-                ApiResponseConstants.GoldenProductCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> Create([FromBody] SaveGoldenProductCategoryDto dto)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.CreateAsync(dto, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage });
+            }
+        }
 
         [HttpPut("{id:int}")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
-        [ProducesResponseType(StatusCodes.Status409Conflict)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Update(int id, [FromBody] SaveGoldenProductCategoryDto dto) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.UpdateAsync(id, dto, CurrentUser)),
-                ApiResponseConstants.GoldenProductCategoriesErrorMessage, _logger);
+        public async Task<IActionResult> Update(int id, [FromBody] SaveGoldenProductCategoryDto dto)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.UpdateAsync(id, dto, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage });
+            }
+        }
 
         [HttpPatch("{id:int}/inactivate")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Inactivate(int id) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.SetActiveAsync(id, active: false, CurrentUser)),
-                ApiResponseConstants.GoldenProductCategoriesErrorMessage, _logger);
+        public Task<IActionResult> Inactivate(int id) => SetActive(id, active: false);
 
         [HttpPatch("{id:int}/activate")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Activate(int id) =>
-            this.ExecuteAsync(
-                async _ => this.ToActionResult(await _service.SetActiveAsync(id, active: true, CurrentUser)),
-                ApiResponseConstants.GoldenProductCategoriesErrorMessage, _logger);
+        public Task<IActionResult> Activate(int id) => SetActive(id, active: true);
+
+        private async Task<IActionResult> SetActive(int id, bool active)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.SetActiveAsync(id, active, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage });
+            }
+        }
     }
 }
 ```
@@ -1190,7 +1466,7 @@ services.AddScoped<IGoldenRecognitionCategoryService, GoldenRecognitionCategoryS
 services.AddScoped<IGoldenProductCategoryService, GoldenProductCategoryService>();
 ```
 
-Nada en `InfrastructureServiceRegistration.cs`: el repositorio genérico, el Unit of Work y el helper ya están registrados. `TimeProvider` también (si no, `services.AddSingleton(TimeProvider.System);`).
+Nada en `InfrastructureServiceRegistration.cs`: el repositorio genérico, el Unit of Work y el helper ya están registrados.
 
 ---
 
@@ -1208,7 +1484,7 @@ Nada en `InfrastructureServiceRegistration.cs`: el repositorio genérico, el Uni
    - Si no aparece, Font Awesome se carga por CDN o kit en `index.html`: busca `fontawesome` ahí y revisa la versión en la URL.
    - Si es 5.x, los prefijos son `fas` en vez de `fa-solid` y varios nombres cambian. Avísame y ajusto el catálogo.
 
-2. **El selector solo pinta lo que manda la API.** `GET /api/golden-points/recognition-categories/appearance-options` devuelve:
+2. **El selector solo pinta lo que manda la API.** `GET /api/GoldenRecognitionCategories/appearance-options` devuelve:
 
    ```json
    {
@@ -1237,30 +1513,30 @@ Nada en `InfrastructureServiceRegistration.cs`: el repositorio genérico, el Uni
 
 ## 10. Contrato
 
-Base: `/api/golden-points`. Las respuestas usan el formato de siempre: `{ response, hasError, errors }`.
+Rutas con `api/[controller]` (ASP.NET no distingue mayúsculas en la ruta). Todas las respuestas son `{ response, hasError, errors }`. **Los errores de negocio llegan con HTTP 200 y `hasError: true`**, como en Request: el frontend debe revisar `hasError` (su `unwrap` ya lo hace).
 
 | Método | Ruta | Cuerpo | Respuesta |
 |---|---|---|---|
-| `GET` | `/recognition-categories?status=Activa` | — | `GoldenRecognitionCategoryDto[]`, activas primero y por nombre |
-| `GET` | `/recognition-categories/appearance-options` | — | `{ icons, colors }` |
-| `GET` | `/recognition-categories/{id}` | — | `GoldenRecognitionCategoryDto` · `404` |
-| `POST` | `/recognition-categories` | `{ name, description, icon, color }` | Categoría creada, `status: "Activa"` · `400` · `409` |
-| `PUT` | `/recognition-categories/{id}` | `{ name, description, icon, color }` | Categoría actualizada · `400` · `404` · `409` |
-| `PATCH` | `/recognition-categories/{id}/inactivate` | — | Categoría con `status: "Inactiva"` · `404` |
-| `PATCH` | `/recognition-categories/{id}/activate` | — | Categoría con `status: "Activa"` · `404` |
-| `GET` | `/product-categories?status=Inactiva` | — | `GoldenProductCategoryDto[]` |
-| `GET` | `/product-categories/{id}` | — | `GoldenProductCategoryDto` · `404` |
-| `POST` | `/product-categories` | `{ name, description }` | Categoría creada · `400` · `409` |
-| `PUT` | `/product-categories/{id}` | `{ name, description }` | Categoría actualizada · `400` · `404` · `409` |
-| `PATCH` | `/product-categories/{id}/inactivate` | — | `status: "Inactiva"` · `404` |
-| `PATCH` | `/product-categories/{id}/activate` | — | `status: "Activa"` · `404` |
+| `GET` | `/api/GoldenRecognitionCategories?status=Activa` | — | Lista, activas primero y por nombre |
+| `GET` | `/api/GoldenRecognitionCategories/appearance-options` | — | `{ icons, colors }` |
+| `GET` | `/api/GoldenRecognitionCategories/{id}` | — | Una categoría · `hasError` si no existe |
+| `POST` | `/api/GoldenRecognitionCategories` | `{ name, description, icon, color }` | Creada, con su `id` y `status: "Activa"` |
+| `PUT` | `/api/GoldenRecognitionCategories/{id}` | `{ name, description, icon, color }` | Actualizada |
+| `PATCH` | `/api/GoldenRecognitionCategories/{id}/inactivate` | — | `status: "Inactiva"` |
+| `PATCH` | `/api/GoldenRecognitionCategories/{id}/activate` | — | `status: "Activa"` |
+| `GET` | `/api/GoldenProductCategories?status=Inactiva` | — | Lista |
+| `GET` | `/api/GoldenProductCategories/{id}` | — | Una categoría |
+| `POST` | `/api/GoldenProductCategories` | `{ name, description }` | Creada, con su `id` |
+| `PUT` | `/api/GoldenProductCategories/{id}` | `{ name, description }` | Actualizada |
+| `PATCH` | `/api/GoldenProductCategories/{id}/inactivate` | — | `status: "Inactiva"` |
+| `PATCH` | `/api/GoldenProductCategories/{id}/activate` | — | `status: "Activa"` |
 
-`status` vacío o ausente = todas. Cualquier otro valor distinto de `Activa`/`Inactiva` → `400`.
+HTTP distinto de 200: `401` sin usuario autenticado y `500` por un error no controlado.
 
-Ejemplo de creación:
+Ejemplo:
 
 ```json
-POST /api/golden-points/recognition-categories
+POST /api/GoldenRecognitionCategories
 {
   "name": "Servicio",
   "description": "Actos de servicio que impactan positivamente al equipo o usuario.",
@@ -1284,17 +1560,25 @@ POST /api/golden-points/recognition-categories
 }
 ```
 
+Nombre repetido (también HTTP 200):
+
+```json
+{ "response": null, "hasError": true, "errors": ["Ya existe una categoría de reconocimiento con ese nombre. Si está inactiva, actívala en lugar de crear otra."] }
+```
+
 ---
 
 ## 11. Pruebas
 
 - Crear con nombre `"  Servicio   al  cliente "` → se guarda `"Servicio al cliente"`.
-- Crear `servicio` cuando existe `Servicio` inactiva → `409` con el mensaje de reactivar.
-- Crear con `icon: "fa-solid fa-medall"` → `400` (no está en el catálogo); con `"<script>"` → `400` (formato).
-- Crear con `color: "#2563eb"` → se guarda `#2563EB`; con `"azul"` o `"#FFF"` → `400`.
-- Editar una categoría con un icono antiguo (`fa-solid fa-hands-helping`) sin cambiar el icono → `200`; cambiarlo por uno fuera del catálogo → `400`.
-- Inactivar dos veces la misma → `200` las dos; `updated_date` cambia solo la primera vez.
-- `GET ?status=activa` (minúsculas) → solo activas; `?status=borrada` → `400`.
+- **Crear y revisar el `id` de la respuesta: debe ser el real, no `0`.**
+- Crear `servicio` cuando existe `Servicio` inactiva → `hasError: true` con el mensaje de reactivar.
+- Crear con `icon: "fa-solid fa-medall"` → `hasError` (no está en el catálogo); con `"<script>"` → `hasError` (formato).
+- Crear con `color: "#2563eb"` → se guarda `#2563EB`; con `"azul"` o `"#FFF"` → `hasError`.
+- Editar una categoría con un icono antiguo (`fa-solid fa-hands-helping`) sin cambiar el icono → éxito; cambiarlo por uno fuera del catálogo → `hasError`.
+- Inactivar dos veces la misma → éxito las dos; `updated_date` cambia solo la primera vez.
+- `GET ?status=activa` (minúsculas) → solo activas; `?status=borrada` → `hasError`.
+- Sin token → `401`.
 - `GET` sin `status` → todas, activas primero.
 - Usuario sin permiso de administración → puede listar, no puede crear ni editar.
 - Revisar en la base de datos que `created_by` y `updated_by` tengan el correo del usuario.
@@ -1307,8 +1591,10 @@ POST /api/golden-points/recognition-categories
 - [ ] Entidades sin `BaseEntity` (o heredándola solo si sus tipos coinciden).
 - [ ] Configuraciones en `Configurations/` (se cargan solas).
 - [ ] Feature `GoldenPoints` con `Constants`, `Dtos`, `Helpers`, `Interfaces` y `Services`.
-- [ ] Servicios con `ITransactionExecutorHelper` + `Repository<T>()`; sin repositorio propio.
-- [ ] Controladores con `ExecuteAsync` + `ToActionResult` y mensajes en `ApiResponseConstants`.
+- [ ] `DbSet` de las dos entidades en `DOCCbDbContext`.
+- [ ] Servicios con `ResponseDto<T>`, `ITransactionExecutorHelper` + `Repository<T>()` y `DateTime.UtcNow`; sin repositorio propio.
+- [ ] `CreateAsync` vuelve a mapear después del helper (la respuesta trae el `id` real).
+- [ ] Controladores con el patrón de Request (`api/[controller]`, usuario autenticado, `try/catch`, `Ok(response)`) y mensajes en `ApiResponseConstants`.
 - [ ] Permiso de administración en `POST`, `PUT` y `PATCH`; `GET` para cualquier usuario autenticado.
 - [ ] Versión de Font Awesome confirmada y catálogo revisado contra ella.
 - [ ] Servicios registrados en `ApplicationServiceRegistration.cs`.
