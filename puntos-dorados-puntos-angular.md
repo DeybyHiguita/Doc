@@ -9,7 +9,13 @@ Dos pantallas nuevas, conectadas a la API de [puntos-dorados-puntos-api.md](punt
 
 **El feed no cambia:** una asignación de puntos no es un reconocimiento y nunca aparece ahí.
 
-Sigue lo que ya tiene el proyecto: un solo facade (`puntos-dorados.fecade.ts`), métodos que devuelven `{ hasError, response }` y estado en signals. Reutiliza `PagedList` y `GoldenResult` de [puntos-dorados-reconocimientos-angular.md](puntos-dorados-reconocimientos-angular.md).
+Sigue el patrón con el que quedó implementado reconocimientos ([puntos-dorados-cambios-frontend.md](puntos-dorados-cambios-frontend.md)):
+
+| Capa | Cómo |
+|---|---|
+| **Servicio** | `AuthService` + `await this.authHeaders()` en cada método (`async`, devuelven `Promise<Observable<GoldenResult<T>>>`) y `catchError` con `HttpErrorHandlerService`. |
+| **Facade** | Cada método pasa por `runRecognitionRequest` y devuelve `Promise<GoldenResult<T>>`. Nunca lanza. |
+| **Componentes** | Revisan `result.hasError`; los errores van a un signal junto al formulario, sin cerrarlo. Las listas usan `PagedList`. |
 
 ---
 
@@ -40,7 +46,7 @@ src/app/features/puntos-dorados/
 ├── application/
 │   ├── golden-request-id.ts                         nuevo — GUID para la idempotencia
 │   ├── golden-validators.ts                         nuevo — largo de texto sin contar espacios
-│   └── puntos-dorados.fecade.ts                     ✏️ + 6 métodos
+│   └── puntos-dorados.fecade.ts                     ✏️ + 6 métodos con runRecognitionRequest
 └── presentation/
     ├── admin/points-admin/                          nuevo ⭐ pestaña "Puntos"
     │   ├── points-admin.component.ts
@@ -125,7 +131,7 @@ export const GOLDEN_POINTS_LIMITS = {
 
 ### `infraestructure/golden-api.ts` (nuevo)
 
-Lo genérico de la API ya no es solo de reconocimientos. **Mueve** a este archivo, sin cambios, `GoldenResultDto`, `GoldenPagedResultDto`, `toResult`, `toPage`, `parseUtc` y `toErrorMessage` desde `golden-recognitions.mapper.ts`, y agrega `parseDateOnly`:
+Lo genérico de la API ya no es solo de reconocimientos. **Mueve** a este archivo, sin cambios, `GoldenResultDto`, `GoldenPagedResultDto`, `toResult`, `toPage`, `parseUtc` y `toErrorMessage` desde donde estén hoy (en la guía estaban en `golden-recognitions.mapper.ts`), y agrega `parseDateOnly` y `toIsoDate`:
 
 ```ts
 /** "2027-04-07" → 7 de abril a las 00:00 en hora local. Las fechas sin hora NO se tratan como UTC. */
@@ -142,7 +148,7 @@ export function toIsoDate(date: Date): string {
 }
 ```
 
-En `golden-recognitions.mapper.ts` y `golden-recognitions.service.ts`, cambia esos imports a `'./golden-api'`.
+En los archivos de reconocimientos (mapper, servicio y facade), cambia esos imports a `'./golden-api'` o `'../infraestructure/golden-api'`. Si prefieres no mover nada todavía, importa esos helpers desde donde están y crea `golden-api.ts` solo con `parseDateOnly` y `toIsoDate`.
 
 ### `infraestructure/golden-points.mapper.ts`
 
@@ -253,11 +259,15 @@ export function toPointsSummary(dto: GoldenPointsSummaryDto): GoldenPointsSummar
 
 ### `infraestructure/golden-points.service.ts`
 
+Mismo patrón que `golden-recognitions.service.ts`: token en cada llamada y errores HTTP al `HttpErrorHandlerService`.
+
 ```ts
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable, map } from 'rxjs';
-import { environment } from '../../../../enviroments/enviroment'; // ⬅ el mismo import que el servicio de productos
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
+import { Observable, catchError, map } from 'rxjs';
+import { environment } from '../../../../enviroments/enviroment';          // ⬅ mismos imports que golden-recognitions.service.ts
+import { AuthService } from '@core/services/auth-msal.service';             // ⬅ ruta real del AuthService
+import { HttpErrorHandlerService } from '@core/services/http-error-handler.service'; // ⬅ ruta real
 import {
   AssignGoldenPoints,
   GoldenPagedResult,
@@ -277,46 +287,105 @@ import {
 @Injectable({ providedIn: 'root' })
 export class GoldenPointsService {
   private readonly http = inject(HttpClient);
+  private readonly authService = inject(AuthService);
+  private readonly httpErrorHandler = inject(HttpErrorHandlerService);
   private readonly baseUrl = `${environment.api.baseUrl}/api/GoldenPoints`;
 
   // ── Colaborador (el usuario sale del token) ────────────────────────
 
-  getMySummary(): Observable<GoldenResult<GoldenPointsSummary>> {
+  async getMySummary(): Promise<Observable<GoldenResult<GoldenPointsSummary>>> {
+    const headers = await this.authHeaders();
+
     return this.http
-      .get<GoldenResultDto<GoldenPointsSummaryDto>>(`${this.baseUrl}/me/summary`)
-      .pipe(map(dto => toResult(dto, toPointsSummary)));
+      .get<GoldenResultDto<GoldenPointsSummaryDto>>(`${this.baseUrl}/me/summary`, { headers })
+      .pipe(
+        map(dto => toResult(dto, toPointsSummary)),
+        catchError(error => this.handleError(error)),
+      );
   }
 
-  getMyTransactions(query: GoldenPointsQuery): Observable<GoldenResult<GoldenPagedResult<GoldenPointsTransaction>>> {
+  async getMyTransactions(query: GoldenPointsQuery): Promise<Observable<GoldenResult<GoldenPagedResult<GoldenPointsTransaction>>>> {
+    const headers = await this.authHeaders();
+
     return this.http
-      .get<GoldenResultDto<GoldenPagedResultDto<GoldenPointsTransactionDto>>>(`${this.baseUrl}/me/transactions`, { params: this.params(query) })
-      .pipe(map(dto => toResult(dto, page => toPage(page, toPointsTransaction))));
+      .get<GoldenResultDto<GoldenPagedResultDto<GoldenPointsTransactionDto>>>(`${this.baseUrl}/me/transactions`, {
+        headers,
+        params: this.params(query),
+      })
+      .pipe(
+        map(dto => toResult(dto, page => toPage(page, toPointsTransaction))),
+        catchError(error => this.handleError(error)),
+      );
   }
 
   // ── Administración ─────────────────────────────────────────────────
 
-  getUserSummary(email: string): Observable<GoldenResult<GoldenPointsSummary>> {
+  async getUserSummary(email: string): Promise<Observable<GoldenResult<GoldenPointsSummary>>> {
+    const headers = await this.authHeaders();
+
     return this.http
-      .get<GoldenResultDto<GoldenPointsSummaryDto>>(`${this.baseUrl}/summary`, { params: new HttpParams().set('email', email) })
-      .pipe(map(dto => toResult(dto, toPointsSummary)));
+      .get<GoldenResultDto<GoldenPointsSummaryDto>>(`${this.baseUrl}/summary`, {
+        headers,
+        params: new HttpParams().set('email', email),
+      })
+      .pipe(
+        map(dto => toResult(dto, toPointsSummary)),
+        catchError(error => this.handleError(error)),
+      );
   }
 
-  getTransactions(query: GoldenPointsQuery): Observable<GoldenResult<GoldenPagedResult<GoldenPointsTransaction>>> {
+  async getTransactions(query: GoldenPointsQuery): Promise<Observable<GoldenResult<GoldenPagedResult<GoldenPointsTransaction>>>> {
+    const headers = await this.authHeaders();
+
     return this.http
-      .get<GoldenResultDto<GoldenPagedResultDto<GoldenPointsTransactionDto>>>(`${this.baseUrl}/transactions`, { params: this.params(query) })
-      .pipe(map(dto => toResult(dto, page => toPage(page, toPointsTransaction))));
+      .get<GoldenResultDto<GoldenPagedResultDto<GoldenPointsTransactionDto>>>(`${this.baseUrl}/transactions`, {
+        headers,
+        params: this.params(query),
+      })
+      .pipe(
+        map(dto => toResult(dto, page => toPage(page, toPointsTransaction))),
+        catchError(error => this.handleError(error)),
+      );
   }
 
-  assign(request: AssignGoldenPoints): Observable<GoldenResult<GoldenPointsTransaction>> {
+  async assign(request: AssignGoldenPoints): Promise<Observable<GoldenResult<GoldenPointsTransaction>>> {
+    const headers = await this.authHeaders();
+
     return this.http
-      .post<GoldenResultDto<GoldenPointsTransactionDto>>(`${this.baseUrl}/assignments`, request)
-      .pipe(map(dto => toResult(dto, toPointsTransaction)));
+      .post<GoldenResultDto<GoldenPointsTransactionDto>>(`${this.baseUrl}/assignments`, request, { headers })
+      .pipe(
+        map(dto => toResult(dto, toPointsTransaction)),
+        catchError(error => this.handleError(error)),
+      );
   }
 
-  reverse(transactionId: number, reason: string): Observable<GoldenResult<GoldenPointsTransaction>> {
+  async reverse(transactionId: number, reason: string): Promise<Observable<GoldenResult<GoldenPointsTransaction>>> {
+    const headers = await this.authHeaders();
+
     return this.http
-      .post<GoldenResultDto<GoldenPointsTransactionDto>>(`${this.baseUrl}/transactions/${transactionId}/reverse`, { reason })
-      .pipe(map(dto => toResult(dto, toPointsTransaction)));
+      .post<GoldenResultDto<GoldenPointsTransactionDto>>(`${this.baseUrl}/transactions/${transactionId}/reverse`, { reason }, { headers })
+      .pipe(
+        map(dto => toResult(dto, toPointsTransaction)),
+        catchError(error => this.handleError(error)),
+      );
+  }
+
+  // ── Privados ───────────────────────────────────────────────────────
+
+  /**
+   * ⬇ Copia el MISMO cuerpo de authHeaders() de golden-recognitions.service.ts
+   * (pide el token con AuthService en cada llamada y arma Authorization: Bearer …).
+   */
+  private async authHeaders(): Promise<HttpHeaders> {
+    // …
+  }
+
+  /**
+   * ⬇ El MISMO llamado a HttpErrorHandlerService que usa golden-recognitions.service.ts.
+   * Debe relanzar el error (throwError) para que el facade lo convierta en { hasError: true }.
+   */
+  private handleError(error: unknown): Observable<never> {
+    // …
   }
 
   private params(query: GoldenPointsQuery): HttpParams {
@@ -338,6 +407,10 @@ export class GoldenPointsService {
   }
 }
 ```
+
+> **Rutas de `AuthService` y `HttpErrorHandlerService`:** las de arriba son de ejemplo. Copia los `import` exactos de `golden-recognitions.service.ts`.
+>
+> **`authHeaders()` repetido:** ya está en dos servicios (reconocimientos y puntos), y la redención será el tercero. Cuando eso pase, conviene moverlo a un servicio compartido (por ejemplo `GoldenApiAuthService` con `headers()`) e inyectarlo en los tres.
 
 ---
 
@@ -387,7 +460,7 @@ export function trimmedLength(min: number, max: number): ValidatorFn {
 
 ### `application/puntos-dorados.fecade.ts` ✏️ — métodos nuevos
 
-Usa el `toPromise` privado que se agregó con los reconocimientos.
+Pasan por el mismo wrapper que reconocimientos (`runRecognitionRequest`): ningún error sale del facade.
 
 ```ts
 import { GoldenPointsService } from '../infraestructure/golden-points.service';
@@ -404,31 +477,38 @@ private readonly points = inject(GoldenPointsService);
 // ── Puntos (API) ─────────────────────────────────────────────────────
 
 getMyPointsSummary(): Promise<GoldenResult<GoldenPointsSummary>> {
-  return this.toPromise(this.points.getMySummary(), 'No se pudo cargar tu saldo de puntos.');
+  return this.runRecognitionRequest(() => this.points.getMySummary(), 'No se pudo cargar tu saldo de puntos.');
 }
 
 getMyPointsHistory(query: GoldenPointsQuery): Promise<GoldenResult<GoldenPagedResult<GoldenPointsTransaction>>> {
-  return this.toPromise(this.points.getMyTransactions(query), 'No se pudo cargar tu historial de puntos.');
+  return this.runRecognitionRequest(() => this.points.getMyTransactions(query), 'No se pudo cargar tu historial de puntos.');
 }
 
 getUserPointsSummary(email: string): Promise<GoldenResult<GoldenPointsSummary>> {
-  return this.toPromise(this.points.getUserSummary(email), 'No se pudo consultar el saldo de la persona.');
+  return this.runRecognitionRequest(() => this.points.getUserSummary(email), 'No se pudo consultar el saldo de la persona.');
 }
 
 getPointsHistory(query: GoldenPointsQuery): Promise<GoldenResult<GoldenPagedResult<GoldenPointsTransaction>>> {
-  return this.toPromise(this.points.getTransactions(query), 'No se pudieron cargar los movimientos de puntos.');
+  return this.runRecognitionRequest(() => this.points.getTransactions(query), 'No se pudieron cargar los movimientos de puntos.');
 }
 
 assignPoints(request: AssignGoldenPoints): Promise<GoldenResult<GoldenPointsTransaction>> {
-  return this.toPromise(this.points.assign(request), 'No se pudo asignar los puntos. Intenta de nuevo: no se abonarán dos veces.');
+  return this.runRecognitionRequest(
+    () => this.points.assign(request),
+    'No se pudo asignar los puntos. Intenta de nuevo: no se abonarán dos veces.',
+  );
 }
 
 reversePointsAssignment(transactionId: number, reason: string): Promise<GoldenResult<GoldenPointsTransaction>> {
-  return this.toPromise(this.points.reverse(transactionId, reason), 'No se pudo reversar la asignación.');
+  return this.runRecognitionRequest(() => this.points.reverse(transactionId, reason), 'No se pudo reversar la asignación.');
 }
 ```
 
-> Los métodos que hoy existen con correo (`getTransactions(email)`, `getPointsBuckets(email)`, `getExpiringPoints(email)`) quedan reemplazados por estos. Ver sección 7.3 antes de borrarlos.
+> **Firma del wrapper.** Aquí se le pasa una función (`() => this.points.getMySummary()`), que es la forma segura: si `authHeaders()` falla al pedir el token, el error ocurre **dentro** del `try` del wrapper. Si en tu código `runRecognitionRequest` recibe la promesa directamente (`this.runRecognitionRequest(this.points.getMySummary(), …)`), usa esa forma en los seis métodos.
+>
+> **Nombre.** Con puntos, el wrapper deja de ser solo de reconocimientos. Renombrarlo a `runApiRequest` es opcional y no cambia nada más.
+>
+> **Sin signals nuevos en el facade.** El estado de puntos vive en los componentes (`PagedList` y el resumen). Así no hay dos copias del mismo dato.
 
 ---
 
@@ -1872,6 +1952,11 @@ import { MyPointsComponent } from './my-points/my-points.component';
 type UserTab = 'feed' | 'reconocer' | 'mis-reconocimientos' | 'mis-puntos' | 'redimir';
 
 // En imports del @Component: agrega MyPointsComponent.
+
+// En loadTabData(tab): "Mis puntos" no necesita caso, porque app-my-points carga sus datos al crearse.
+// Si el switch tiene un default que avisa de pestañas sin manejar, agrega:
+//   case 'mis-puntos':
+//     break;
 ```
 
 ```html
@@ -1886,10 +1971,10 @@ type UserTab = 'feed' | 'reconocer' | 'mis-reconocimientos' | 'mis-puntos' | 're
 
 ### 7.3 Datos de prueba que reemplaza
 
-`refreshUserFinancialData()` hoy llena `transactions`, `pointsBuckets` y `expiringPoints` con `getTransactions(email)`, `getPointsBuckets(email)` y `getExpiringPoints(email)`. "Mis puntos" ya no los necesita.
+`loadModuleData()` ya no carga los datos financieros al inicio. Con "Mis puntos" conectado a la API, quedan tres cosas por resolver:
 
-1. Busca dónde se usan en la plantilla del colaborador: `transactions()`, `pointsBuckets()` y `expiringPoints()`.
-2. **Si la pestaña "Redimir" muestra el saldo** calculado con esos datos, cámbialo por el de la API:
+1. **`refreshUserFinancialData()`.** Si todavía existe (por ejemplo, llamado desde `bootstrapUserContext()`), quita de ahí `getTransactions(email)`, `getPointsBuckets(email)` y `getExpiringPoints(email)`: "Mis puntos" usa la API. `getRedemptions(email)` se queda hasta que exista la redención.
+2. **Saldo en "Redimir".** Si esa pestaña muestra el saldo calculado con `transactions()`, cárgalo desde la API en el caso `'redimir'` de `loadTabData`:
 
    ```ts
    readonly pointsBalance = signal<number | null>(null);
@@ -1900,11 +1985,17 @@ type UserTab = 'feed' | 'reconocer' | 'mis-reconocimientos' | 'mis-puntos' | 're
        this.pointsBalance.set(result.response.balance);
      }
    }
+
+   // En loadTabData:
+   //   case 'redimir':
+   //     void this.loadPointsBalance();
+   //     … (lo que ya carga: catálogo disponible)
+   //     break;
    ```
 
-   Llámalo en `loadRedeemTabData()` (solo en el navegador).
-3. Quita esas tres llamadas de `refreshUserFinancialData()`. `getRedemptions(email)` se queda hasta que exista la redención.
-4. **"Vencimiento de puntos" en "Mis reconocimientos"** (`getRecognitionExpirationDate`) busca un lote con `source === 'Reconocimiento #id'`. Ese formato no existe en la API. Hoy ningún reconocimiento abona puntos, así que no muestra nada. Cuando se haga la aprobación (parte 2), la API devolverá la fecha de vencimiento dentro del reconocimiento recibido y este método desaparece.
+3. **"Vencimiento de puntos" en "Mis reconocimientos"** (`getRecognitionExpirationDate`) busca un lote con `source === 'Reconocimiento #id'`. Ese formato no existe en la API. Hoy ningún reconocimiento abona puntos, así que no muestra nada. Cuando se haga la aprobación (parte 2), la API devolverá la fecha de vencimiento dentro del reconocimiento recibido y este método desaparece.
+
+> **Errores repetidos.** Si `HttpErrorHandlerService` muestra una alerta para los errores HTTP, los formularios de esta guía también muestran `result.errors`. Revisa la observación 1 de [puntos-dorados-cambios-frontend.md](puntos-dorados-cambios-frontend.md) para que el usuario no vea el mismo error dos veces.
 
 ---
 
@@ -1936,10 +2027,11 @@ type UserTab = 'feed' | 'reconocer' | 'mis-reconocimientos' | 'mis-puntos' | 're
 - [ ] API de [puntos-dorados-puntos-api.md](puntos-dorados-puntos-api.md) desplegada.
 - [ ] Helpers comunes movidos a `infraestructure/golden-api.ts`; reconocimientos importando desde ahí.
 - [ ] Tipos de puntos en el dominio (campos nuevos de `GoldenPointsTransaction` opcionales).
-- [ ] `golden-points.service.ts`, `golden-points.mapper.ts`, `golden-request-id.ts` y `golden-validators.ts`.
-- [ ] Seis métodos nuevos en el facade.
+- [ ] `golden-points.service.ts` con `authHeaders()` y `catchError` copiados de `golden-recognitions.service.ts`.
+- [ ] `golden-points.mapper.ts`, `golden-request-id.ts` y `golden-validators.ts`.
+- [ ] Seis métodos nuevos en el facade con `runRecognitionRequest`.
 - [ ] `GoldenPointsAdminComponent` en la pestaña "Puntos"; `people()` con usuarios reales.
 - [ ] `MyPointsComponent` en la pestaña "Mis puntos".
-- [ ] `refreshUserFinancialData()` sin las tres llamadas de prueba; saldo de "Redimir" desde la API si lo usa.
+- [ ] `refreshUserFinancialData()` sin las tres llamadas de prueba; saldo de "Redimir" cargado en `loadTabData('redimir')` si lo usa.
 - [ ] Fechas sin hora con `parseDateOnly` (no `parseUtc`).
 - [ ] Probado el doble clic y el reintento después de un error de red.

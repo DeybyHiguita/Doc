@@ -135,6 +135,8 @@ Lo que hay que seguir de aquí en adelante (puntos, redención, aprobaciones):
 | **Facade** | Cada método pasa por el wrapper (`runRecognitionRequest` o su equivalente) y devuelve `Promise<GoldenResult<T>>`. Nunca lanza. |
 | **Componente** | Revisa `result.hasError`. Los errores van a un signal (`xxxErrors`) que se muestra donde está el formulario, sin cerrarlo. Los datos de cada pestaña se cargan en `loadTabData`. |
 
+[puntos-dorados-puntos-angular.md](puntos-dorados-puntos-angular.md) está escrita con este patrón.
+
 ---
 
 ## 5. Diferencias con las guías (sin modificarlas)
@@ -142,7 +144,6 @@ Lo que hay que seguir de aquí en adelante (puntos, redención, aprobaciones):
 | Guía | Lo que dice | Cómo quedó / qué ajustar al usarla |
 |---|---|---|
 | [puntos-dorados-reconocimientos-angular.md](puntos-dorados-reconocimientos-angular.md) | Servicio sin encabezados, métodos `Observable`, facade con `toPromise`, carga por pestaña con `ensureRecognitionTab`. | Implementado con el patrón de la sección 4 y `loadTabData`. |
-| [puntos-dorados-puntos-angular.md](puntos-dorados-puntos-angular.md) | `GoldenPointsService` con métodos `Observable` sin `authHeaders`; facade con `this.toPromise(...)`. | Al implementarla: `GoldenPointsService` con el patrón de la sección 4 y los seis métodos del facade con el wrapper. Los componentes `app-golden-points-admin` y `app-my-points` no cambian: solo llaman al facade. |
 
 **Sobre el wrapper:** ahora lo van a usar también puntos y, después, redención. Conviene un nombre genérico (por ejemplo `runApiRequest`) para no llamar `runRecognitionRequest` desde puntos. Es solo un renombre.
 
