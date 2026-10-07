@@ -643,7 +643,7 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Dtos
 }
 ```
 
-> **Área de la persona.** Las tarjetas muestran el área ("Operaciones", "Comercial"). Sale de `dbo.users` (sección 8). Si tu entidad `User` no tiene esa propiedad, quita `Area` aquí y en la proyección.
+> **Área de la persona.** La entidad `User` no tiene área y `UsersArea` no está mapeada en EF, así que por ahora `Area` llega vacía (la proyección de la sección 7 pone `string.Empty`). Cuando se mapee `UsersArea`, se cambia solo esa línea.
 
 ---
 
@@ -720,12 +720,13 @@ namespace DOCCB.Infraestructure.Repositories
             r.Id,
             r.NomineeUserId,
             r.Nominee.DisplayName,               // ⬅ propiedades reales de User
-            r.Nominee.CorportativeEmail ?? string.Empty,
-            r.Nominee.Area ?? string.Empty,      // ⬅ si User no tiene área, usa string.Empty
+            r.Nominee.CorportativeEmail,
+            // User no tiene área y UsersArea no está mapeada en EF: por ahora va vacía.
+            string.Empty,
             r.NominatorUserId,
             r.Nominator.DisplayName,
-            r.Nominator.CorportativeEmail ?? string.Empty,
-            r.Nominator.Area ?? string.Empty,
+            r.Nominator.CorportativeEmail,
+            string.Empty,
             r.Reason,
             r.CategoryId,
             r.Category.Name,
@@ -1363,7 +1364,7 @@ public const string GoldenRecognitionsErrorMessage = "No se pudo completar la op
 
 ### `Controllers/GoldenRecognitionsController.cs`
 
-El patrón de Request. Como las siete acciones repiten el mismo `try/catch`, va una sola vez en `HandleAsync`; cada acción solo dice qué servicio llama.
+El patrón de `RequestController`: **cada acción con su `try/catch` completo**. No se usa un método privado que lo comparta (la primera versión tenía `HandleAsync` y se reemplazó; ver [convenciones](.claude/convenciones-backend-doccb.md), regla 18).
 
 ```csharp
 using Microsoft.AspNetCore.Authorization;
@@ -1386,64 +1387,10 @@ namespace DOCCB.WebApp.Controllers
         /// <summary>Crear reconocimiento (pestaña "Reconocer"). Nace Pendiente.</summary>
         [HttpPost]
         [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Create([FromBody] CreateGoldenRecognitionDto dto) =>
-            HandleAsync(email => _service.CreateAsync(dto, email));
-
-        /// <summary>Los que creé, todos los estados. GET sent?page=1&pageSize=10</summary>
-        [HttpGet("sent")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetSent([FromQuery] GoldenRecognitionPageQueryDto query) =>
-            HandleAsync(email => _service.GetSentAsync(query, email));
-
-        /// <summary>"Mis reconocimientos": los aprobados que recibí. GET received?page=1&pageSize=10</summary>
-        [HttpGet("received")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetReceived([FromQuery] GoldenRecognitionPageQueryDto query) =>
-            HandleAsync(email => _service.GetReceivedAsync(query, email));
-
-        /// <summary>Feed público. GET feed?page=1&pageSize=10&categoryId=</summary>
-        [HttpGet("feed")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetFeed([FromQuery] GoldenRecognitionPageQueryDto query) =>
-            HandleAsync(email => _service.GetFeedAsync(query, email));
-
-        /// <summary>Conteo de reacciones de un reconocimiento del feed.</summary>
-        [HttpGet("{id:int}/reactions")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> GetReactions(int id) =>
-            HandleAsync(email => _service.GetReactionsAsync(id, email));
-
-        /// <summary>Agregar reacción (idempotente). PUT {id}/reactions/Aplauso</summary>
-        [HttpPut("{id:int}/reactions/{reactionType}")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> AddReaction(int id, string reactionType) =>
-            HandleAsync(email => _service.AddReactionAsync(id, reactionType, email));
-
-        /// <summary>Quitar reacción (idempotente). DELETE {id}/reactions/Aplauso</summary>
-        [HttpDelete("{id:int}/reactions/{reactionType}")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> RemoveReaction(int id, string reactionType) =>
-            HandleAsync(email => _service.RemoveReactionAsync(id, reactionType, email));
-
-        /// <summary>
-        /// El try/catch estándar de los controladores (como RequestController), escrito una vez:
-        /// usuario autenticado → servicio → Ok(response).
-        /// </summary>
-        private async Task<IActionResult> HandleAsync<T>(Func<string, Task<T>> action)
+        public async Task<IActionResult> Create([FromBody] CreateGoldenRecognitionDto dto)
         {
             try
             {
@@ -1453,7 +1400,205 @@ namespace DOCCB.WebApp.Controllers
                     return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
                 }
 
-                var response = await action(authenticatedUserInfo.Email);
+                var response = await _service.CreateAsync(dto, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage });
+            }
+        }
+
+        /// <summary>Los que creé, todos los estados. GET sent?page=1&amp;pageSize=10</summary>
+        [HttpGet("sent")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> GetSent([FromQuery] GoldenRecognitionPageQueryDto query)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.GetSentAsync(query, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage });
+            }
+        }
+
+        /// <summary>"Mis reconocimientos": los aprobados que recibí. GET received?page=1&amp;pageSize=10</summary>
+        [HttpGet("received")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> GetReceived([FromQuery] GoldenRecognitionPageQueryDto query)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.GetReceivedAsync(query, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage });
+            }
+        }
+
+        /// <summary>Feed público. GET feed?page=1&amp;pageSize=10&amp;categoryId=</summary>
+        [HttpGet("feed")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> GetFeed([FromQuery] GoldenRecognitionPageQueryDto query)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.GetFeedAsync(query, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage });
+            }
+        }
+
+        /// <summary>Conteo de reacciones de un reconocimiento del feed.</summary>
+        [HttpGet("{id:int}/reactions")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> GetReactions(int id)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.GetReactionsAsync(id, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage });
+            }
+        }
+
+        /// <summary>Agregar reacción (idempotente). PUT {id}/reactions/Aplauso</summary>
+        [HttpPut("{id:int}/reactions/{reactionType}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> AddReaction(int id, string reactionType)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.AddReactionAsync(id, reactionType, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionsErrorMessage });
+            }
+        }
+
+        /// <summary>Quitar reacción (idempotente). DELETE {id}/reactions/Aplauso</summary>
+        [HttpDelete("{id:int}/reactions/{reactionType}")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> RemoveReaction(int id, string reactionType)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.RemoveReactionAsync(id, reactionType, authenticatedUserInfo.Email);
                 return Ok(response);
             }
             catch (ArgumentException ex)
@@ -1472,8 +1617,6 @@ namespace DOCCB.WebApp.Controllers
     }
 }
 ```
-
-> Si en el proyecto prefieren cada acción con su `try/catch` completo, copia el cuerpo de `HandleAsync` en cada una: el comportamiento es el mismo.
 
 ### Registro — `ApplicationServiceRegistration.cs`
 
@@ -1622,7 +1765,8 @@ Un ítem de "Mis reconocimientos" (`received`):
 - [ ] `GoldenPointsRecognitions.sql` ejecutado (después de las categorías).
 - [ ] Enums en `DOCCB.Domain/Enum`, entidades sin `BaseEntity`, configuraciones con conversión a códigos en mayúsculas.
 - [ ] Dos `DbSet` en `DOCCbDbContext`.
-- [ ] `DisplayName`, `CorportativeEmail` y `Area` ajustados a las propiedades reales de `User`.
+- [ ] Proyección con `DisplayName` y `CorportativeEmail` (no admite nulos) y `Area` vacía (`User` no tiene área).
+- [ ] Controlador con `try/catch` completo en cada acción.
 - [ ] `IGoldenRecognitionQueryRepository` registrado en `InfrastructureServiceRegistration.cs`; `IGoldenRecognitionService` en `ApplicationServiceRegistration.cs`.
 - [ ] El feed nunca devuelve puntos; "enviados" tampoco.
 - [ ] Reacciones idempotentes y prueba de doble clic hecha.

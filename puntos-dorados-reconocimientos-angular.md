@@ -14,6 +14,7 @@ Sigue lo que ya tiene el proyecto: un solo facade (`puntos-dorados.fecade.ts`) c
 | `refreshFeedReactions()` llama `getReactions(id)` **una vez por tarjeta**. | 20 tarjetas son 20 peticiones. | Cada tarjeta del feed ya trae sus conteos y "mis reacciones". Reaccionar devuelve el conteo actualizado: **cero peticiones extra**. |
 | Las reacciones envían `userEmail` desde el navegador. | Cualquiera podría reaccionar en nombre de otra persona. | El usuario sale del token en la API. El frontend no envía correos. |
 | Una sola reacción por persona (`selectedReactionByRecognition`). | No coincide con la API. | Cada tipo (Like, Aplauso, Inspirador, Orgullo) se activa y se quita por separado. |
+| La tarjeta muestra el área bajo el nombre ("Operaciones"). | `User` no tiene área en EF: la API la envía vacía por ahora. | Ocultar la línea cuando venga vacía: `@if (item.nominee.area) { … }`. |
 | `currentUser` usa `people()[0]` cuando no encuentra el correo. | Es un resto de los datos de prueba: si el usuario de MSAL no está en `people`, la pantalla actúa como **otra persona** (puntos, redenciones). | Se quita esa alternativa (sección 6.6). |
 | La pestaña "Reconocer" solo tiene el botón. | No se ven los reconocimientos enviados. | Lista "Reconocimientos que has enviado", con su estado. |
 

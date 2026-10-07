@@ -1231,17 +1231,10 @@ namespace DOCCB.WebApp.Controllers
 
         [HttpPatch("{id:int}/inactivate")]
         [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Inactivate(int id) => SetActive(id, active: false);
-
-        [HttpPatch("{id:int}/activate")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Activate(int id) => SetActive(id, active: true);
-
-        private async Task<IActionResult> SetActive(int id, bool active)
+        public async Task<IActionResult> Inactivate(int id)
         {
             try
             {
@@ -1251,8 +1244,44 @@ namespace DOCCB.WebApp.Controllers
                     return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
                 }
 
-                var response = await _service.SetActiveAsync(id, active, authenticatedUserInfo.Email);
+                var response = await _service.SetActiveAsync(id, active: false, authenticatedUserInfo.Email);
                 return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage });
+            }
+        }
+
+        [HttpPatch("{id:int}/activate")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> Activate(int id)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.SetActiveAsync(id, active: true, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenRecognitionCategoriesErrorMessage, error = ex.Message });
             }
             catch (UnauthorizedAccessException)
             {
@@ -1267,7 +1296,7 @@ namespace DOCCB.WebApp.Controllers
 }
 ```
 
-> `Inactivate` y `Activate` comparten un método privado para no repetir el `try/catch`. Si en el proyecto prefieren cada acción completa, copia el cuerpo de `SetActive` en las dos.
+> `Inactivate` y `Activate` llevan cada una su `try/catch` completo (convención del proyecto: nada de métodos privados compartidos en los controladores).
 
 ### `Controllers/GoldenProductCategoriesController.cs`
 
@@ -1423,17 +1452,10 @@ namespace DOCCB.WebApp.Controllers
 
         [HttpPatch("{id:int}/inactivate")]
         [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Inactivate(int id) => SetActive(id, active: false);
-
-        [HttpPatch("{id:int}/activate")]
-        [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
-        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public Task<IActionResult> Activate(int id) => SetActive(id, active: true);
-
-        private async Task<IActionResult> SetActive(int id, bool active)
+        public async Task<IActionResult> Inactivate(int id)
         {
             try
             {
@@ -1443,8 +1465,44 @@ namespace DOCCB.WebApp.Controllers
                     return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
                 }
 
-                var response = await _service.SetActiveAsync(id, active, authenticatedUserInfo.Email);
+                var response = await _service.SetActiveAsync(id, active: false, authenticatedUserInfo.Email);
                 return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage, error = ex.Message });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Unauthorized(new { message = ApiResponseConstants.UnauthorizedUserMessage });
+            }
+            catch (Exception)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage });
+            }
+        }
+
+        [HttpPatch("{id:int}/activate")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<IActionResult> Activate(int id)
+        {
+            try
+            {
+                var authenticatedUserInfo = MicrosoftUserAuthenticatorHelper.GetAuthenticatedUserInfo(User);
+                if (string.IsNullOrEmpty(authenticatedUserInfo.Email))
+                {
+                    return Unauthorized(new { message = ApiResponseConstants.NotAuthenticatedUserMessage });
+                }
+
+                var response = await _service.SetActiveAsync(id, active: true, authenticatedUserInfo.Email);
+                return Ok(response);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ApiResponseConstants.GoldenProductCategoriesErrorMessage, error = ex.Message });
             }
             catch (UnauthorizedAccessException)
             {
