@@ -88,6 +88,15 @@ WebApp/
 
 **¿Repositorio propio?** Sí, de solo lectura. Todo son conteos y sumas agrupadas (por estado, categoría y mes), hechos en SQL: no se trae ningún reconocimiento ni movimiento a memoria. Es el caso de la sección 5 de [ARQUITECTURA Y EJEMPLO](.claude/ARQUITECTURA%20Y%20EJEMPLO.MD).
 
+**¿Por qué no el genérico, como en aprobaciones?** Hay dos formas de hacerlo con el genérico, y las dos son las que la arquitectura descarta:
+
+| Con el genérico | Problema |
+|---|---|
+| Traer los reconocimientos y movimientos del período con `GetListAsync` y contar en C# | Con un rango de 24 meses son miles de filas por cada vez que se abre la pestaña. |
+| `GroupBy`, `CountAsync` y `SumAsync` sobre `Query()` o dentro de un `selector`, en el servicio | Son 12 consultas con `GroupBy`, y el mismo filtro (colaborador, estado, categoría) repetido en cada una. Es la "señal práctica" de la sección 5: ese LINQ va en un repositorio. |
+
+En el repositorio, el filtro se escribe una sola vez (`Recognitions(scope)` y `AssignedPoints(scope)`) y cada consulta lo reutiliza. Las dos lecturas simples (correos → ids y lista de categorías) van en el mismo repositorio para que el servicio tenga una sola dependencia y no necesite también el helper.
+
 ---
 
 ## 3. Paso 1 — 🗄️ Índices
