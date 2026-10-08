@@ -16,7 +16,7 @@ API para la pestaña **Aprobaciones** de `PuntosDoradosAdminComponent`. Cada tar
 | Dónde | ¿Sale? | ¿Muestra los puntos? |
 |---|---|---|
 | **Feed** | Sí, si es público | **Nunca.** El DTO del feed no tiene campo de puntos. |
-| **"Mis reconocimientos"** de quien lo recibió | Sí, público o privado | Sí, y la fecha en que vencen (Paso 8). Son suyos. |
+| **"Mis reconocimientos"** de quien lo recibió | Sí, público o privado | Sí, y la fecha en que vencen (Paso 7). Son suyos. |
 | **"Enviados"** de quien lo creó | Sí, con su estado | No. |
 | **Aprobaciones** (administración) | Sí | Sí. |
 
@@ -52,15 +52,14 @@ DOCCB.Domain/
 
 DOCCB.Application/
 ├── Contracts/Persistence/
-│   ├── IGoldenRecognitionApprovalQueryRepository.cs      nuevo ⭐ lista de aprobación
-│   └── IGoldenRecognitionQueryRepository.cs              ✏️ + vencimiento de puntos (Paso 8)
+│   └── IGoldenRecognitionQueryRepository.cs              ✏️ + vencimiento de puntos (Paso 7)
 └── Features/GoldenPoints/Application/
     ├── Constants/
     │   ├── GoldenRecognitionApprovalConstants.cs         nuevo
     │   └── GoldenPointsConstants.cs                      ✏️ + 1 mensaje
     ├── Dtos/
     │   ├── GoldenRecognitionApprovalDtos.cs              nuevo
-    │   └── GoldenRecognitionDtos.cs                      ✏️ + PointsExpiresAt (Paso 8)
+    │   └── GoldenRecognitionDtos.cs                      ✏️ + PointsExpiresAt (Paso 7)
     ├── Helpers/
     │   ├── GoldenRecognitionApprovalValidator.cs         nuevo
     │   ├── GoldenRecognitionApprovalMapper.cs            nuevo
@@ -68,15 +67,12 @@ DOCCB.Application/
     ├── Interfaces/IGoldenRecognitionApprovalService.cs   nuevo
     └── Services/
         ├── GoldenRecognitionApprovalService.cs           nuevo ⭐
-        └── GoldenRecognitionService.cs                   ✏️ GetReceivedAsync (Paso 8)
+        └── GoldenRecognitionService.cs                   ✏️ GetReceivedAsync (Paso 7)
 
 DOCCB.Infraestructure/
 ├── Configurations/GoldenRecognitionConfiguration.cs      ✏️ + 2 propiedades
 ├── Persistence/Scripts SQL/GoldenRecognitionApprovals.sql nuevo
-├── Repositories/
-│   ├── GoldenRecognitionApprovalQueryRepository.cs       nuevo
-│   └── GoldenRecognitionQueryRepository.cs               ✏️ (Paso 8)
-└── InfrastructureServiceRegistration.cs                  ✏️ + 1 línea
+└── Repositories/GoldenRecognitionQueryRepository.cs      ✏️ (Paso 7)
 
 WebApp/
 ├── Common/ApiResponseConstants.cs                        ✏️ + 1 mensaje
@@ -84,6 +80,8 @@ WebApp/
 ```
 
 > **Por qué un servicio y un controlador nuevos** en lugar de agregar acciones a `GoldenRecognitionsController`: lo de administración queda separado de lo del colaborador. Cuando se activen los permisos, se protege un solo controlador sin tocar el otro.
+>
+> **Sin repositorio propio.** Todo va con `ITransactionExecutorHelper` y `unitOfWork.Repository<T>()` (sección 7). Los únicos archivos de `Repositories/` que se tocan son los del Paso 7, que ya existen.
 
 ---
 
@@ -420,7 +418,7 @@ public static async Task<string?> SetRecognitionPointsAsync(IUnitOfWork unitOfWo
     if (delta > 0)
     {
         // Los puntos de más vencen con el abono original, si todavía no ha vencido.
-        var creditBucket = (await buckets.GetListAsync(b => b.TransactionId == credit!.Id)).FirstOrDefault();
+        var creditBucket = await buckets.GetAsync(b => b.TransactionId == credit!.Id);
         var expires = creditBucket is not null && creditBucket.ExpiresDate > today ? creditBucket.ExpiresDate : defaultExpires;
 
         adjustment.Bucket = new GoldenPointsBucket
@@ -437,10 +435,13 @@ public static async Task<string?> SetRecognitionPointsAsync(IUnitOfWork unitOfWo
         // Menos puntos: se quitan de lo que queda de este reconocimiento, primero lo que vence antes.
         var toRemove = -delta;
         var movementIds = movements.Select(t => t.Id).ToList();
-        var available = (await buckets.GetListAsync(b => movementIds.Contains(b.TransactionId) && b.RemainingPoints > 0))
-            .OrderBy(b => b.ExpiresDate)
-            .ThenBy(b => b.Id)
-            .ToList();
+
+        // Con seguimiento y ordenados en SQL, en una sola consulta. includes: null elige la sobrecarga.
+        var available = await buckets.GetListAsync(
+            b => movementIds.Contains(b.TransactionId) && b.RemainingPoints > 0,
+            orderBy: q => q.OrderBy(b => b.ExpiresDate).ThenBy(b => b.Id),
+            includes: null,
+            disableTracking: false);
 
         var used = granted - available.Sum(b => b.RemainingPoints);
         if (change.TargetPoints < used || account.Balance < toRemove)
@@ -448,16 +449,14 @@ public static async Task<string?> SetRecognitionPointsAsync(IUnitOfWork unitOfWo
             return string.Format(GoldenPointsConstants.RecognitionPointsAlreadyUsed, used);
         }
 
-        foreach (var row in available)
+        foreach (var bucket in available)
         {
             if (toRemove == 0)
             {
                 break;
             }
 
-            // GetListAsync no hace seguimiento: se lee con GetByIdAsync para poder modificarlo.
-            var bucket = await buckets.GetByIdAsync(row.Id);
-            var take = Math.Min(bucket!.RemainingPoints, toRemove);
+            var take = Math.Min(bucket.RemainingPoints, toRemove);
             bucket.RemainingPoints -= take;
             toRemove -= take;
         }
@@ -486,168 +485,69 @@ public static async Task<string?> SetRecognitionPointsAsync(IUnitOfWork unitOfWo
 
 ---
 
-## 7. Paso 5 — Lecturas: `IGoldenRecognitionApprovalQueryRepository`
+## 7. Lecturas: repositorio genérico, sin repositorio propio
 
-Repositorio de consulta: proyección de cuatro tablas (reconocimiento, dos personas, categoría), paginación con total y un orden propio.
+Revisado con la regla de [ARQUITECTURA Y EJEMPLO](.claude/ARQUITECTURA%20Y%20EJEMPLO.MD) (sección 5): el genérico alcanza. No hay que contar ni sumar en memoria, ni encadenar LINQ sobre `Query()` en el servicio.
 
-### `Contracts/Persistence/IGoldenRecognitionApprovalQueryRepository.cs`
+| Lo que necesita la pestaña | Con el repositorio genérico |
+|---|---|
+| Filtrar por estado | `GetPagedListAsync(r => status == null \|\| r.Status == status, …)` |
+| Pendientes primero, el más antiguo arriba | `orderBy` con un orden calculado: el genérico lo recibe tal cual |
+| Página con total | `GetPagedListAsync` → `PaginatedResponseDto<T>` (`TotalRecords`) |
+| Personas y categoría de cada tarjeta | `includes: WithCard`: `Include` de `Nominee`, `Nominator` y `Category` |
+| Responder la tarjeta después de aprobar, rechazar o ajustar | La misma entidad que se modificó, leída con `GetAsync(…, includes: WithCard, disableTracking: false)` dentro de la lambda. No hace falta una segunda consulta. |
 
-```csharp
-using DOCCB.Domain.Enum;
-
-namespace DOCCB.Application.Contracts.Persistence
-{
-    /// <summary>Un reconocimiento con los datos de su revisión, para la pestaña Aprobaciones.</summary>
-    public sealed record GoldenRecognitionReviewRow(
-        int Id,
-        int NomineeId, string NomineeName, string NomineeEmail, string NomineeArea,
-        int NominatorId, string NominatorName, string NominatorEmail, string NominatorArea,
-        string Reason,
-        int CategoryId, string CategoryName, string CategoryIcon, string CategoryColor,
-        GoldenRecognitionStatus Status,
-        GoldenRecognitionVisibility Visibility,
-        int? PointsAssigned,
-        string? ReviewComment,
-        DateTime CreatedDate,
-        DateTime? ReviewedDate,
-        string? ReviewedBy);
-
-    public sealed record GoldenRecognitionReviewPage(IReadOnlyList<GoldenRecognitionReviewRow> Rows, int TotalCount);
-
-    /// <summary>Solo lectura. Las escrituras van por el repositorio genérico.</summary>
-    public interface IGoldenRecognitionApprovalQueryRepository
-    {
-        /// <summary>Pendientes primero (el más antiguo arriba); después los revisados (el más reciente arriba).</summary>
-        Task<GoldenRecognitionReviewPage> GetPageAsync(GoldenRecognitionStatus? status, int page, int pageSize);
-
-        Task<GoldenRecognitionReviewRow?> GetRowAsync(int recognitionId);
-    }
-}
-```
-
-### `Repositories/GoldenRecognitionApprovalQueryRepository.cs`
-
-```csharp
-using System.Linq.Expressions;
-using DOCCB.Application.Contracts.Persistence;
-using DOCCB.Domain.Entities;
-using DOCCB.Domain.Enum;
-using DOCCB.Infraestructure.Common;
-using DOCCB.Infraestructure.Persistence.Models;
-using Microsoft.EntityFrameworkCore;
-
-namespace DOCCB.Infraestructure.Repositories
-{
-    /// <summary>Tabla principal: golden_recognition. Solo lecturas sin seguimiento.</summary>
-    public class GoldenRecognitionApprovalQueryRepository(DOCCbDbContext context)
-        : GenericRepositoryBase<DOCCbDbContext, GoldenRecognition>(context), IGoldenRecognitionApprovalQueryRepository
-    {
-        private static readonly Expression<Func<GoldenRecognition, GoldenRecognitionReviewRow>> ToRow = r => new GoldenRecognitionReviewRow(
-            r.Id,
-            r.NomineeUserId,
-            r.Nominee.DisplayName,
-            r.Nominee.CorportativeEmail,
-            // User no tiene área y UsersArea no está mapeada en EF: por ahora va vacía.
-            string.Empty,
-            r.NominatorUserId,
-            r.Nominator.DisplayName,
-            r.Nominator.CorportativeEmail,
-            string.Empty,
-            r.Reason,
-            r.CategoryId,
-            r.Category.Name,
-            r.Category.Icon,
-            r.Category.Color,
-            r.Status,
-            r.Visibility,
-            r.PointsAssigned,
-            r.ReviewComment,
-            r.CreatedDate,
-            r.ReviewedDate,
-            r.ReviewedBy);
-
-        public async Task<GoldenRecognitionReviewPage> GetPageAsync(GoldenRecognitionStatus? status, int page, int pageSize)
-        {
-            var query = _dbSet.AsNoTracking();
-
-            if (status is { } value)
-            {
-                query = query.Where(r => r.Status == value);
-            }
-
-            // 1. Pendientes antes que revisados.
-            // 2. Entre pendientes, el más antiguo primero (en los revisados esta clave es NULL para todos y no cuenta).
-            // 3. Entre revisados, la revisión más reciente primero.
-            var ordered = query
-                .OrderBy(r => r.Status == GoldenRecognitionStatus.Pending ? 0 : 1)
-                .ThenBy(r => r.Status == GoldenRecognitionStatus.Pending ? (DateTime?)r.CreatedDate : null)
-                .ThenByDescending(r => r.ReviewedDate)
-                .ThenByDescending(r => r.Id);
-
-            var total = await ordered.CountAsync();
-
-            var rows = await ordered
-                .Skip((page - 1) * pageSize)
-                .Take(pageSize)
-                .Select(ToRow)
-                .ToListAsync();
-
-            return new GoldenRecognitionReviewPage(rows, total);
-        }
-
-        public Task<GoldenRecognitionReviewRow?> GetRowAsync(int recognitionId) =>
-            _dbSet.AsNoTracking()
-                .Where(r => r.Id == recognitionId)
-                .Select(ToRow)
-                .FirstOrDefaultAsync();
-    }
-}
-```
-
-### Registro — `InfrastructureServiceRegistration.cs` ✏️
-
-Bajo `//Repositorios de consulta`:
-
-```csharp
-services.AddScoped<IGoldenRecognitionApprovalQueryRepository, GoldenRecognitionApprovalQueryRepository>();
-```
+- **Costo:** `Include` trae todas las columnas de `dbo.users` de las personas de la página. Con 10 a 50 tarjetas no se nota. Si algún día pesa, el cambio es a una proyección (`GetListAsync<TResult>` con `selector`), no a un repositorio propio.
+- **Respuesta:** sigue siendo `GoldenPagedResultDto<T>` (`items`, `totalCount`), el que espera el frontend en Puntos Dorados. Se arma con los números de `PaginatedResponseDto<T>`.
 
 ---
 
-## 8. Paso 6 — Mapeo y servicio
+## 8. Paso 5 — Mapeo y servicio
 
 ### `Helpers/GoldenRecognitionApprovalMapper.cs`
 
 ```csharp
-using DOCCB.Application.Contracts.Persistence;
 using DOCCB.Application.Features.GoldenPoints.Application.Constants;
 using DOCCB.Application.Features.GoldenPoints.Application.Dtos;
+using DOCCB.Domain.Entities;
 using DOCCB.Domain.Enum;
 
 namespace DOCCB.Application.Features.GoldenPoints.Application.Helpers
 {
     public static class GoldenRecognitionApprovalMapper
     {
-        /// <summary>Administración: sí ve los puntos.</summary>
-        public static GoldenRecognitionApprovalDto ToDto(GoldenRecognitionReviewRow row) => new()
+        /// <summary>
+        /// Administración: sí ve los puntos.
+        /// La entidad debe venir con Nominee, Nominator y Category (el servicio los incluye con WithCard).
+        /// </summary>
+        public static GoldenRecognitionApprovalDto ToDto(GoldenRecognition recognition) => new()
         {
-            Id = row.Id,
-            Nominee = new GoldenPersonDto { Id = row.NomineeId, Name = row.NomineeName, Email = row.NomineeEmail, Area = row.NomineeArea },
-            NominatedBy = new GoldenPersonDto { Id = row.NominatorId, Name = row.NominatorName, Email = row.NominatorEmail, Area = row.NominatorArea },
-            Reason = row.Reason,
-            CategoryId = row.CategoryId,
-            CategoryName = row.CategoryName,
-            CategoryIcon = row.CategoryIcon,
-            CategoryColor = row.CategoryColor,
-            Status = GoldenRecognitionCodes.ToStatusCode(row.Status),
-            Visibility = GoldenRecognitionCodes.ToVisibilityCode(row.Visibility),
-            PointsAssigned = row.PointsAssigned,
-            CreatedAt = row.CreatedDate,
-            ReviewedAt = row.ReviewedDate,
-            ReviewedBy = row.ReviewedBy,
-            ReviewComment = row.ReviewComment,
-            CanReview = row.Status == GoldenRecognitionStatus.Pending,
-            CanAdjustPoints = row.Status == GoldenRecognitionStatus.Approved,
+            Id = recognition.Id,
+            Nominee = Person(recognition.Nominee),
+            NominatedBy = Person(recognition.Nominator),
+            Reason = recognition.Reason,
+            CategoryId = recognition.CategoryId,
+            CategoryName = recognition.Category.Name,
+            CategoryIcon = recognition.Category.Icon,
+            CategoryColor = recognition.Category.Color,
+            Status = GoldenRecognitionCodes.ToStatusCode(recognition.Status),
+            Visibility = GoldenRecognitionCodes.ToVisibilityCode(recognition.Visibility),
+            PointsAssigned = recognition.PointsAssigned,
+            CreatedAt = recognition.CreatedDate,
+            ReviewedAt = recognition.ReviewedDate,
+            ReviewedBy = recognition.ReviewedBy,
+            ReviewComment = recognition.ReviewComment,
+            CanReview = recognition.Status == GoldenRecognitionStatus.Pending,
+            CanAdjustPoints = recognition.Status == GoldenRecognitionStatus.Approved,
+        };
+
+        /// <summary>User no tiene área (UsersArea no está mapeada en EF): va vacía.</summary>
+        private static GoldenPersonDto Person(User user) => new()
+        {
+            Id = user.Id,
+            Name = user.DisplayName,
+            Email = user.CorportativeEmail,
+            Area = string.Empty,
         };
     }
 }
@@ -673,8 +573,10 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Interfaces
 
 ### `Services/GoldenRecognitionApprovalService.cs` ⭐
 
-- **Lista:** repositorio de consulta.
-- **Aprobar, rechazar y ajustar:** helper + repositorio genérico, con el ciclo de reintentos (regla 21 de las convenciones).
+Todo con el helper y el repositorio genérico (patrón de Request):
+
+- **Lista:** `ExecuteQueryAsync` + `GetPagedListAsync`.
+- **Aprobar, rechazar y ajustar:** `ExecuteWithTransactionAsync` con el ciclo de reintentos (regla 21 de las convenciones). La entidad se lee con seguimiento y con las personas y la categoría. Se modifica en la lambda y, cuando el helper guarda, se responde con ella (como el patrón del `Id` después de insertar).
 
 > ⚠️ **Los errores se devuelven antes de modificar nada.** `ExecuteWithTransactionAsync` guarda al terminar la lambda aunque esta devuelva un `ResponseDto` con error. Si una entidad con seguimiento ya se modificó, ese cambio se guardaría. Por eso cada método valida todo primero y modifica al final.
 
@@ -688,16 +590,14 @@ using DOCCB.Application.Features.GoldenPoints.Application.Helpers;
 using DOCCB.Application.Features.GoldenPoints.Application.Interfaces;
 using DOCCB.Domain.Entities;
 using DOCCB.Domain.Enum;
-using Microsoft.EntityFrameworkCore; // DbUpdateException
+using Microsoft.EntityFrameworkCore;        // Include, DbUpdateException
+using Microsoft.EntityFrameworkCore.Query;  // IIncludableQueryable
 
 namespace DOCCB.Application.Features.GoldenPoints.Application.Services
 {
-    public class GoldenRecognitionApprovalService(
-        ITransactionExecutorHelper transactionHelper,
-        IGoldenRecognitionApprovalQueryRepository queryRepository) : IGoldenRecognitionApprovalService
+    public class GoldenRecognitionApprovalService(ITransactionExecutorHelper transactionHelper) : IGoldenRecognitionApprovalService
     {
         private readonly ITransactionExecutorHelper _transactionHelper = transactionHelper;
-        private readonly IGoldenRecognitionApprovalQueryRepository _queryRepository = queryRepository;
 
         // ── Lista ───────────────────────────────────────────────────────
 
@@ -714,16 +614,35 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
             //     throw new UnauthorizedAccessException();
             // }
 
+            // Página y tamaño ya validados: GetPagedListAsync no los revisa.
             var (page, pageSize) = GoldenRecognitionApprovalValidator.Paging(query);
-            var result = await _queryRepository.GetPageAsync(status, page, pageSize);
 
-            return ResponseDtoHelper.CreateSuccessResponseDto(new GoldenPagedResultDto<GoldenRecognitionApprovalDto>
-            {
-                Items = result.Rows.Select(GoldenRecognitionApprovalMapper.ToDto).ToList(),
-                Page = page,
-                PageSize = pageSize,
-                TotalCount = result.TotalCount,
-            });
+            return await _transactionHelper.ExecuteQueryAsync<ResponseDto<GoldenPagedResultDto<GoldenRecognitionApprovalDto>>>(
+                async unitOfWork =>
+                {
+                    var result = await unitOfWork.Repository<GoldenRecognition>().GetPagedListAsync(
+                        r => status == null || r.Status == status,
+                        orderBy: q => q
+                            // 1. Pendientes antes que revisados.
+                            .OrderBy(r => r.Status == GoldenRecognitionStatus.Pending ? 0 : 1)
+                            // 2. Entre pendientes, el más antiguo primero (en los revisados esta clave es NULL y no cuenta).
+                            .ThenBy(r => r.Status == GoldenRecognitionStatus.Pending ? (DateTime?)r.CreatedDate : null)
+                            // 3. Entre revisados, la revisión más reciente primero.
+                            .ThenByDescending(r => r.ReviewedDate)
+                            .ThenByDescending(r => r.Id),
+                        includes: WithCard,
+                        pageNumber: page,
+                        pageSize: pageSize);
+
+                    return ResponseDtoHelper.CreateSuccessResponseDto(new GoldenPagedResultDto<GoldenRecognitionApprovalDto>
+                    {
+                        Items = result.Data.Select(GoldenRecognitionApprovalMapper.ToDto).ToList(),
+                        Page = result.PageNumber,
+                        PageSize = result.PageSize,
+                        TotalCount = result.TotalRecords,
+                    });
+                }
+            ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenPagedResultDto<GoldenRecognitionApprovalDto>>(GoldenRecognitionConstants.UnexpectedError);
         }
 
         // ── Aprobar ─────────────────────────────────────────────────────
@@ -743,11 +662,12 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
             {
                 try
                 {
+                    GoldenRecognition? reviewed = null;
+
                     var response = await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenRecognitionApprovalDto>>(
                         async unitOfWork =>
                         {
-                            // GetByIdAsync hace seguimiento: los cambios se guardan al final, con su row_version.
-                            var recognition = await unitOfWork.Repository<GoldenRecognition>().GetByIdAsync(recognitionId);
+                            var recognition = await LoadForReviewAsync(unitOfWork, recognitionId);
 
                             var stateError = PendingStateError(recognition);
                             if (stateError is not null)
@@ -773,29 +693,29 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
 
                             if (points > 0)
                             {
-                                var category = await unitOfWork.Repository<GoldenRecognitionCategory>().GetByIdAsync(recognition.CategoryId);
-
                                 // Misma transacción: se aprueba y se abona, o ninguna de las dos.
                                 await GoldenPointsLedger.CreditAsync(unitOfWork, new GoldenPointsCredit(
                                     recognition.NomineeUserId,
                                     points,
                                     GoldenPointsSource.Recognition,
-                                    $"Reconocimiento aprobado: {category?.Name ?? "Reconocimiento"}",
+                                    $"Reconocimiento aprobado: {recognition.Category.Name}",
                                     GoldenClock.Today().AddMonths(GoldenPointsConstants.DefaultExpirationMonths),
                                     currentUserEmail,
                                     RecognitionId: recognition.Id));
                             }
 
+                            reviewed = recognition;
                             return ResponseDtoHelper.CreateSuccessResponseDto(new GoldenRecognitionApprovalDto()); // se arma después de guardar
                         }
                     ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionApprovalDto>(GoldenRecognitionConstants.UnexpectedError);
 
-                    if (response.HasError)
+                    if (response.HasError || reviewed is null)
                     {
                         return response;
                     }
 
-                    return await ReadAsync(recognitionId);
+                    // El helper ya guardó: se responde con la misma entidad, ya actualizada.
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenRecognitionApprovalMapper.ToDto(reviewed));
                 }
                 catch (InvalidOperationException ex) when (ex.InnerException is DbUpdateException)
                 {
@@ -823,10 +743,12 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
             {
                 try
                 {
+                    GoldenRecognition? reviewed = null;
+
                     var response = await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenRecognitionApprovalDto>>(
                         async unitOfWork =>
                         {
-                            var recognition = await unitOfWork.Repository<GoldenRecognition>().GetByIdAsync(recognitionId);
+                            var recognition = await LoadForReviewAsync(unitOfWork, recognitionId);
 
                             var stateError = PendingStateError(recognition);
                             if (stateError is not null)
@@ -850,16 +772,17 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
                             recognition.UpdatedDate = now;
                             recognition.UpdatedBy = currentUserEmail;
 
+                            reviewed = recognition;
                             return ResponseDtoHelper.CreateSuccessResponseDto(new GoldenRecognitionApprovalDto());
                         }
                     ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionApprovalDto>(GoldenRecognitionConstants.UnexpectedError);
 
-                    if (response.HasError)
+                    if (response.HasError || reviewed is null)
                     {
                         return response;
                     }
 
-                    return await ReadAsync(recognitionId);
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenRecognitionApprovalMapper.ToDto(reviewed));
                 }
                 catch (InvalidOperationException ex) when (ex.InnerException is DbUpdateException)
                 {
@@ -891,10 +814,12 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
             {
                 try
                 {
+                    GoldenRecognition? adjusted = null;
+
                     var response = await _transactionHelper.ExecuteWithTransactionAsync<ResponseDto<GoldenRecognitionApprovalDto>>(
                         async unitOfWork =>
                         {
-                            var recognition = await unitOfWork.Repository<GoldenRecognition>().GetByIdAsync(recognitionId);
+                            var recognition = await LoadForReviewAsync(unitOfWork, recognitionId);
                             if (recognition is null)
                             {
                                 return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionApprovalDto>(GoldenRecognitionApprovalConstants.RecognitionNotFound);
@@ -912,14 +837,12 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
                             //     return ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionApprovalDto>(permissionError);
                             // }
 
-                            var category = await unitOfWork.Repository<GoldenRecognitionCategory>().GetByIdAsync(recognition.CategoryId);
-
                             // El libro decide la diferencia a partir de lo que ya abonó (no de points_assigned).
                             var ledgerError = await GoldenPointsLedger.SetRecognitionPointsAsync(unitOfWork, new GoldenRecognitionPointsChange(
                                 recognition.NomineeUserId,
                                 recognition.Id,
                                 points,
-                                category?.Name ?? "Reconocimiento",
+                                recognition.Category.Name,
                                 currentUserEmail));
 
                             if (ledgerError is not null)
@@ -932,16 +855,17 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
                             recognition.UpdatedDate = now;
                             recognition.UpdatedBy = currentUserEmail;
 
+                            adjusted = recognition;
                             return ResponseDtoHelper.CreateSuccessResponseDto(new GoldenRecognitionApprovalDto());
                         }
                     ) ?? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionApprovalDto>(GoldenRecognitionConstants.UnexpectedError);
 
-                    if (response.HasError)
+                    if (response.HasError || adjusted is null)
                     {
                         return response;
                     }
 
-                    return await ReadAsync(recognitionId);
+                    return ResponseDtoHelper.CreateSuccessResponseDto(GoldenRecognitionApprovalMapper.ToDto(adjusted));
                 }
                 catch (InvalidOperationException ex) when (ex.InnerException is DbUpdateException)
                 {
@@ -955,6 +879,17 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
 
         // ── Privados ────────────────────────────────────────────────────
 
+        /// <summary>Lo que necesita la tarjeta: las dos personas y la categoría.</summary>
+        private static IIncludableQueryable<GoldenRecognition, object> WithCard(IQueryable<GoldenRecognition> query) =>
+            query.Include(r => r.Nominee).Include(r => r.Nominator).Include(r => r.Category);
+
+        /// <summary>
+        /// Con seguimiento, porque se modifica en la lambda (y EF compara su row_version al guardar),
+        /// y con lo que necesita la tarjeta, para responder sin otra consulta.
+        /// </summary>
+        private static Task<GoldenRecognition?> LoadForReviewAsync(IUnitOfWork unitOfWork, int recognitionId) =>
+            unitOfWork.Repository<GoldenRecognition>().GetAsync(r => r.Id == recognitionId, includes: WithCard, disableTracking: false);
+
         /// <summary>Solo un pendiente se aprueba o se rechaza.</summary>
         private static string? PendingStateError(GoldenRecognition? recognition) => recognition?.Status switch
         {
@@ -964,21 +899,14 @@ namespace DOCCB.Application.Features.GoldenPoints.Application.Services
             _ => null,
         };
 
-        /// <summary>El helper ya guardó: se lee con nombres y categoría.</summary>
-        private async Task<ResponseDto<GoldenRecognitionApprovalDto>> ReadAsync(int recognitionId)
-        {
-            var row = await _queryRepository.GetRowAsync(recognitionId);
-            return row is null
-                ? ResponseDtoHelper.CreateErrorResponseDto<GoldenRecognitionApprovalDto>(GoldenRecognitionConstants.UnexpectedError)
-                : ResponseDtoHelper.CreateSuccessResponseDto(GoldenRecognitionApprovalMapper.ToDto(row));
-        }
-
         // Permisos: ValidateReviewerAsync y CanReviewAsync van aquí cuando se activen (sección 9).
     }
 }
 ```
 
 > **`currentUserEmail` en la lista:** por ahora no se usa. Lo usará la validación de permisos.
+>
+> **La entidad después de guardar.** `reviewed` (o `adjusted`) se usa cuando la unidad de trabajo ya se liberó. Funciona porque las personas y la categoría ya vinieron con `Include` y el mapper no lee ninguna otra navegación.
 
 ### Registro — `ApplicationServiceRegistration.cs` ✏️
 
@@ -1008,7 +936,7 @@ Quedan escritos para que solo haya que descomentarlos. Cuando definas la regla, 
 // /// <summary>Aprobar, rechazar y ajustar: permiso + no revisar lo propio.</summary>
 // private async Task<string?> ValidateReviewerAsync(IUnitOfWork unitOfWork, GoldenRecognition recognition, string reviewerEmail)
 // {
-//     var reviewer = (await unitOfWork.Repository<User>().GetListAsync(u => u.CorportativeEmail == reviewerEmail)).FirstOrDefault();
+//     var reviewer = await unitOfWork.Repository<User>().GetAsync(u => u.CorportativeEmail == reviewerEmail);
 //     if (reviewer is null)
 //     {
 //         return GoldenRecognitionConstants.UserNotRegistered;
@@ -1043,7 +971,7 @@ Quedan escritos para que solo haya que descomentarlos. Cuando definas la regla, 
 
 ---
 
-## 10. Paso 7 — Controlador
+## 10. Paso 6 — Controlador
 
 ### `Common/ApiResponseConstants.cs` ✏️
 
@@ -1211,7 +1139,7 @@ namespace DOCCB.WebApp.Controllers
 
 ---
 
-## 11. Paso 8 — "Mis reconocimientos": cuándo vencen los puntos ✏️
+## 11. Paso 7 — "Mis reconocimientos": cuándo vencen los puntos ✏️
 
 "Mis reconocimientos" ya muestra los aprobados con sus puntos. Falta la fecha de vencimiento, que hoy el frontend busca en datos de prueba (`getRecognitionExpirationDate`). Con este paso la trae la API en cada reconocimiento recibido. Es opcional: lo demás funciona sin él.
 
@@ -1364,7 +1292,7 @@ Un ítem de la lista:
 - [ ] Revisados los datos y ejecutado `GoldenRecognitionApprovals.sql`.
 - [ ] `GoldenRecognition` con `ReviewComment` y `RowVersion` (`IsRowVersion`).
 - [ ] `SetRecognitionPointsAsync` en `GoldenPointsLedger` y el mensaje nuevo en `GoldenPointsConstants`.
-- [ ] `IGoldenRecognitionApprovalQueryRepository` bajo `//Repositorios de consulta`; `IGoldenRecognitionApprovalService` en `ApplicationServiceRegistration.cs`.
+- [ ] Lista y respuestas con el repositorio genérico (sin repositorio propio); `IGoldenRecognitionApprovalService` en `ApplicationServiceRegistration.cs`.
 - [ ] Controlador con `try/catch` completo en cada acción.
 - [ ] Permisos comentados (sección 9), con fecha para definir la regla. **No publicar en producción sin activarlos.**
 - [ ] (Opcional) `pointsExpiresAt` en "Mis reconocimientos".
