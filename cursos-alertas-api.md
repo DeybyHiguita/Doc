@@ -5,14 +5,19 @@
 - **Configuración general:** aplica a todos los cursos.
 - **Configuración propia de un curso:** si existe, **reemplaza** a la general para ese curso.
 
-| # | Alerta | A quién | Cuándo | Copia (líder, gerencia, correos fijos) |
+| # | Alerta | Para | Cuándo | Copia (cada alerta tiene la suya) |
 |---|---|---|---|---|
-| 1 | **Bienvenida** (ya existe) | La persona | Al asignarle el curso | Opcional |
-| 2 | **Recordatorio normal** | La persona | N días antes de la fecha límite (por defecto 7) | Opcional (apagada por defecto) |
-| 3 | **Alerta urgente** | La persona | M días antes (por defecto 2), más cerca que la normal | **Sí** por defecto |
-| 4 | **Reporte de resultados** | Una lista de interesados | En uno o varios momentos respecto a la fecha límite (por ejemplo, 3 días antes, el día y 3 días después) | — |
+| 1 | **Bienvenida** (ya existe) | La persona | Al asignarle el curso | Su líder, su gerencia, su dirección y otros correos |
+| 2 | **Recordatorio normal** | La persona | N días antes de la fecha límite (por defecto 7) | Igual, con su propia selección |
+| 3 | **Alerta urgente** | La persona | M días antes (por defecto 2), más cerca que la normal | Igual (por defecto, su líder) |
+| 4 | **Reporte de resultados** | Líderes, gerencia, dirección u otros correos | En los momentos que se elijan respecto a la fecha límite (por ejemplo, 3 días antes, el día y 3 días después) | — |
 
-**Requiere:** la cola de correos de [cursos-cola-correos-api.md](cursos-cola-correos-api.md) ya implementada (tabla `course_email_queue`, `CourseEmailWorker`, composers, `cc` en el correo). Esta guía **no envía correos**: decide qué toca y lo pone en esa cola.
+- **Los días y los momentos son números libres:** cualquier valor de 0 a 365 días, sin una lista cerrada de opciones.
+- **Las copias van siempre en CC del correo de la persona:** se marcan por alerta y no hay un interruptor aparte.
+
+**Requiere:**
+- **La cola de correos** de [cursos-cola-correos-api.md](cursos-cola-correos-api.md) ya implementada (tabla `course_email_queue`, `CourseEmailWorker`, composers, `cc` en el correo). Esta guía **no envía correos**: decide qué toca y lo pone en esa cola.
+- **La integración con el DataLake** (`IDataLakeEmployeeClient`, hoy en la rama `.claude/DataLake`) para el líder y la gerencia. Si todavía no está en la rama de cursos, ver la nota del Paso 5.
 
 **El frontend** está en [cursos-alertas-angular.md](cursos-alertas-angular.md). **Base:** el código de la rama de cursos (`.claude/Cursos API`). Convenciones: [convenciones-backend-doccb.md](.claude/convenciones-backend-doccb.md).
 
@@ -41,8 +46,9 @@ CourseAlertsWorker (cada hora, de 7:00 a 18:00)          CourseEmailWorker (siem
 | **La urgente manda.** | Dentro de la ventana urgente ya no se encola la normal. |
 | **Sin recordatorio redundante.** | Si a la persona la asignaron cuando ya estaba en la ventana del recordatorio normal, no se le envía: la bienvenida ya trae la fecha. |
 | **Nada después de la fecha límite.** | Los recordatorios se detienen ese día. |
+| **Copias por alerta.** | Cada alerta tiene sus casillas "su líder", "su gerencia", "su dirección" y su lista de correos. Van en **CC** del correo de la persona y se resuelven al enviar. |
+| **Reporte a los líderes.** | Cada líder recibe **solo su equipo** dentro del grupo (las personas cuyo líder es él). Los "otros correos" reciben el grupo completo. |
 | **Reportes con margen.** | Cada momento de cada asignación sale una vez a cada destinatario. Si el servidor estuvo apagado ese día, se encola hasta 2 días después. |
-| **Copias en el mismo correo.** | Van en **CC** del correo de la persona. Se resuelven al enviar (el líder sale de Graph en ese momento). |
 | **Configuración que aplica.** | Si el curso tiene una propia, se usa **completa**; si no, la general. No se mezclan campos. |
 | **Si se cambia la fecha límite.** | La llave incluye la fecha: con la fecha nueva, la persona vuelve a recibir sus alertas a tiempo. |
 
@@ -56,30 +62,43 @@ CourseAlertsWorker (cada hora, de 7:00 a 18:00)          CourseEmailWorker (siem
 |---|---|
 | Enviar, reintentar, registrar y mostrar el avance | La cola de [cursos-cola-correos-api.md](cursos-cola-correos-api.md): `course_email_queue`, `CourseEmailWorker`, `ICourseEmailComposer` y la pantalla "Envío de correos". |
 | No repetir una alerta | `course_email_queue.dedupe_key` (índice único). **No hay tabla de control propia.** |
-| Plantilla del recordatorio (normal y urgente) | `TemplateCourseReminderUser.html`: ya trae `PLAZO_TEXTO`, `ALERTA_COLOR` y `ALERTA_FONDO` para los dos tonos. Sin cambios. |
-| Plantilla del reporte | `TemplateCoursePendingReport.html`: un correo por asignación con cifras y las listas de quién terminó y quién falta. Dos ajustes pequeños (Paso 6). |
+| El líder, la gerencia y la dirección de cada persona | **El DataLake** (`IDataLakeEmployeeClient`): empleados con `ManagerEmployeeCode`, `ManagementName` y `DirectionName`, más el catálogo de líderes con su correo. Si el DataLake no responde, el líder sale de Graph (`GetManagerAsync`). |
+| Buscar personas para las copias (frontend) | `GET /api/users/search` (`UserController`), el mismo buscador de usuarios que ya existe. |
+| Plantilla del recordatorio (normal y urgente) | `TemplateCourseReminderUser.html`. Sin cambios. |
+| Plantilla del reporte | `TemplateCoursePendingReport.html`, con dos ajustes pequeños (Paso 6). |
 | Datos de la persona al enviar | `ICourseCompletionRepository.GetAssignmentUserAsync` (el mismo que usa la bienvenida). |
-| Cifras y calificaciones del reporte | `ICourseCompletionService.GetProgressAsync`, el de la página de resultados (respeta el anonimato). |
-| Las personas del reporte | `ICourseCompletionService.GetAssignmentUsersAsync` (estado, fecha de finalización y gerencia), en páginas de 100. |
-| Nombre de quien recibe el reporte | `IUserSearchRepository.FindByEmailsAsync`. |
+| Cifras y calificaciones del reporte | `ICourseCompletionService.GetProgressAsync` y `GetAssignmentUsersAsync`. |
 | "Hoy" en Colombia | `BusinessDate.Today(TimeProvider)`. |
-| Consultas del proceso | El repositorio genérico con `selector` (proyecciones con navegación): no hace falta un repositorio propio. |
-| Tipo del recordatorio normal | `EmailAlertTypes.CourseDueReminder` (ya existe). |
+| Consultas del proceso | El repositorio genérico con `selector`: no hace falta un repositorio propio. |
+
+### Lo que ofrece hoy el DataLake (revisado en `.claude/DataLake`)
+
+| Dato | ¿Está? | Cómo |
+|---|---|---|
+| **Líder** de una persona | ✅ | Empleado → `ManagerEmployeeCode` → catálogo `leaders` (`EmployeeCode`, `CorporateEmail`). |
+| **Gerencia** de una persona (nombre) | ✅ | `ClickEmployeeDto.ManagementName`. |
+| **Dirección** de una persona (nombre) | ✅ | `ClickEmployeeDto.DirectionName`. |
+| **Correo del gerente** o **del director** | ❌ | Los catálogos `managements` y `directions` solo traen `Code` y `Name`, sin responsable. |
+
+**En consecuencia:**
+- **"Su líder"** funciona desde ya.
+- **"Su gerencia" y "su dirección"** se guardan y se muestran como "Pronto". El proceso deja un aviso en el log y no copia. Cuando el DataLake agregue el responsable a esos catálogos (por ejemplo, `HeadEmployeeCode`), se completa solo `CourseAlertCopyResolver`.
+- **De regalo, la gerencia de cada persona:** el formulario de finalización y las listas del reporte dejan de mostrar "No disponible" o "—" (Paso 5).
 
 ### Lo nuevo
 
 | # | Tema | Decisión |
 |---|---|---|
 | 1 | **Estilo del módulo.** | Patrón Request (`ResponseDto`, `ITransactionExecutorHelper`, repositorio genérico, controlador con `try/catch` por acción y `Ok(...)`). |
-| 2 | **General y por curso en la misma tabla.** | `course_alert_settings.course_id NULL` = general. `UNIQUE (course_id)`: SQL Server admite **un solo** `NULL`, así que hay una sola general y una por curso. |
-| 3 | **Listas** (correos de copia, correos del reporte, momentos del reporte). | Columnas JSON (colecciones primitivas de EF Core 8). Son listas cortas que nunca se filtran por SQL. |
-| 4 | **Encolar y enviar, separados.** | `CourseAlertJobService` solo decide y encola (rápido, sin Graph). El envío lo hace la cola, con su ritmo, reintentos y estado. |
-| 5 | **Cuándo corre.** | `CourseAlertsWorker` cada hora entre las 7:00 y las 18:00 de Colombia. Encolar es idempotente, así que repetir no duplica y un reinicio no pierde el día. De noche no encola nada. |
-| 6 | **Líder.** | `IGraphDirectoryService.GetManagerAsync` (método nuevo): el *manager* de la persona en Entra ID, con el mismo `GraphServiceClient`. |
-| 7 | **Gerencia.** | ⚠️ **No hay fuente con el correo de cada gerencia.** `IManagementDirectory` da solo el *nombre* de la gerencia del usuario autenticado y su consulta aún es un TODO. La opción se guarda; `CourseAlertCopyResolver` deja un aviso en el log y no copia. Cuando exista la fuente, se completa ahí. |
-| 8 | **El reporte.** | Un correo **por destinatario**, para saludar con su nombre. Las cifras se calculan **al enviar**, no al encolar. |
-| 9 | **Vista previa.** | Dice qué se encolaría ahora (sin lo que ya está en cola). Muestra las copias como política ("Líder", correos fijos) sin consultar Graph, para que sea rápida. |
-| 10 | **Bienvenida.** | Su composer (`CourseAssignedEmailComposer`) lee la configuración: si está apagada, el correo queda `SKIPPED`; si lleva copia, va en CC. |
+| 2 | **General y por curso en la misma tabla.** | `course_alert_settings.course_id NULL` = general. `UNIQUE (course_id)`: SQL Server admite **un solo** `NULL`. |
+| 3 | **Copias por alerta.** | Cada alerta (bienvenida, recordatorio, urgente) tiene sus columnas: `*_copy_leader`, `*_copy_management`, `*_copy_direction` y `*_copy_emails`. El reporte tiene `report_to_*` y `report_emails`. |
+| 4 | **Listas** (correos, momentos). | Columnas JSON (colecciones primitivas de EF Core 8). |
+| 5 | **Números libres.** | Días antes: de 0 a 365. Momentos del reporte: de 365 días antes a 365 después, hasta 20. Correos por lista: hasta 50. |
+| 6 | **El DataLake, en memoria.** | `DataLakeOrganizationDirectory` trae todos los empleados una vez (páginas de 200) y los guarda **60 minutos** en `IMemoryCache`. Si falla, no lo reintenta durante 5 minutos y sigue sin él. |
+| 7 | **Encolar y enviar, separados.** | `CourseAlertJobService` solo decide y encola. El envío lo hace la cola. |
+| 8 | **Cuándo corre.** | `CourseAlertsWorker` cada hora entre las 7:00 y las 18:00 de Colombia. Encolar es idempotente. |
+| 9 | **El reporte.** | Un correo por destinatario. Las cifras se calculan **al enviar**. A un líder, solo su equipo. |
+| 10 | **Bienvenida.** | Su composer lee la configuración: si está apagada, `SKIPPED`; si tiene copias marcadas, van en CC. |
 
 ---
 
@@ -94,18 +113,22 @@ DOCCB.Application/
 │   ├── Constants/CourseAlertConstants.cs
 │   ├── Dtos/CourseAlertDtos.cs
 │   ├── Dtos/CourseAlertCandidates.cs                            filas que lee el proceso
-│   ├── Helpers/CourseAlertSettingsRules.cs                      validación, valores por defecto y mapeo
+│   ├── Helpers/CourseAlertSettingsRules.cs                      validación, mapeo y destinatarios por alerta
 │   ├── Helpers/CourseAlertSchedule.cs                           ⭐ qué toca hoy y sus llaves
 │   ├── Helpers/CourseAlertProjections.cs                        proyección de una asignación
 │   ├── Interfaces/ICourseAlertSettingsService.cs
 │   ├── Interfaces/ICourseAlertCopyResolver.cs
+│   ├── Interfaces/IOrganizationDirectory.cs                     líder, gerencia y dirección de una persona
 │   ├── Interfaces/ICourseAlertJobService.cs
 │   ├── Services/CourseAlertSettingsService.cs
 │   ├── Services/CourseAlertCopyResolver.cs
+│   ├── Services/DataLakeOrganizationDirectory.cs                el DataLake, en caché
 │   ├── Services/CourseAlertJobService.cs                        ⭐ decide y encola
 │   ├── Composers/CourseReminderEmailComposer.cs                 normal y urgente
 │   └── Composers/CourseReportEmailComposer.cs                   reporte de resultados
-├── Features/Courses/Application/Helpers/BusinessDate.cs         ✏️ + FromUtc
+├── Features/Courses/Application/
+│   ├── Helpers/BusinessDate.cs                                  ✏️ + FromUtc
+│   └── Services/ManagementDirectory.cs                          ✏️ la gerencia sale del DataLake
 ├── Features/CourseEmails/Application/
 │   ├── Composers/CourseAssignedEmailComposer.cs                 ✏️ respeta la configuración
 │   └── Helpers/CourseEmailQueueFactory.cs                       ✏️ + ForPersonId, ForRecipient
@@ -163,45 +186,54 @@ IF OBJECT_ID(N'dbo.course_alert_settings', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.course_alert_settings
     (
-        id                    INT           IDENTITY(1, 1) NOT NULL,
-        course_id             INT           NULL,     -- NULL = configuración general
+        id                         INT           IDENTITY(1, 1) NOT NULL,
+        course_id                  INT           NULL,     -- NULL = configuración general
 
-        -- ① Bienvenida (ya existe el correo; aquí se puede apagar o copiar)
-        welcome_enabled       BIT           NOT NULL CONSTRAINT df_cas_welcome_enabled DEFAULT (1),
-        welcome_copy          BIT           NOT NULL CONSTRAINT df_cas_welcome_copy DEFAULT (0),
+        -- ① Bienvenida y sus copias
+        welcome_enabled            BIT           NOT NULL CONSTRAINT df_cas_welcome_enabled DEFAULT (1),
+        welcome_copy_leader        BIT           NOT NULL CONSTRAINT df_cas_welcome_leader DEFAULT (0),
+        welcome_copy_management    BIT           NOT NULL CONSTRAINT df_cas_welcome_management DEFAULT (0),
+        welcome_copy_direction     BIT           NOT NULL CONSTRAINT df_cas_welcome_direction DEFAULT (0),
+        welcome_copy_emails        NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_welcome_emails DEFAULT (N'[]'),
 
-        -- ② Recordatorio normal
-        reminder_enabled      BIT           NOT NULL CONSTRAINT df_cas_reminder_enabled DEFAULT (1),
-        reminder_days_before  INT           NOT NULL CONSTRAINT df_cas_reminder_days DEFAULT (7),
-        reminder_copy         BIT           NOT NULL CONSTRAINT df_cas_reminder_copy DEFAULT (0),
+        -- ② Recordatorio normal y sus copias
+        reminder_enabled           BIT           NOT NULL CONSTRAINT df_cas_reminder_enabled DEFAULT (1),
+        reminder_days_before       INT           NOT NULL CONSTRAINT df_cas_reminder_days DEFAULT (7),
+        reminder_copy_leader       BIT           NOT NULL CONSTRAINT df_cas_reminder_leader DEFAULT (0),
+        reminder_copy_management   BIT           NOT NULL CONSTRAINT df_cas_reminder_management DEFAULT (0),
+        reminder_copy_direction    BIT           NOT NULL CONSTRAINT df_cas_reminder_direction DEFAULT (0),
+        reminder_copy_emails       NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_reminder_emails DEFAULT (N'[]'),
 
-        -- ③ Alerta urgente
-        urgent_enabled        BIT           NOT NULL CONSTRAINT df_cas_urgent_enabled DEFAULT (1),
-        urgent_days_before    INT           NOT NULL CONSTRAINT df_cas_urgent_days DEFAULT (2),
-        urgent_copy           BIT           NOT NULL CONSTRAINT df_cas_urgent_copy DEFAULT (1),
+        -- ③ Alerta urgente y sus copias
+        urgent_enabled             BIT           NOT NULL CONSTRAINT df_cas_urgent_enabled DEFAULT (1),
+        urgent_days_before         INT           NOT NULL CONSTRAINT df_cas_urgent_days DEFAULT (2),
+        urgent_copy_leader         BIT           NOT NULL CONSTRAINT df_cas_urgent_leader DEFAULT (1),
+        urgent_copy_management     BIT           NOT NULL CONSTRAINT df_cas_urgent_management DEFAULT (0),
+        urgent_copy_direction      BIT           NOT NULL CONSTRAINT df_cas_urgent_direction DEFAULT (0),
+        urgent_copy_emails         NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_urgent_emails DEFAULT (N'[]'),
 
-        -- A quién se copia
-        copy_leader           BIT           NOT NULL CONSTRAINT df_cas_copy_leader DEFAULT (1),
-        copy_management       BIT           NOT NULL CONSTRAINT df_cas_copy_management DEFAULT (0),
-        copy_emails           NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_copy_emails DEFAULT (N'[]'),   -- JSON ["a@x.co"]
+        -- ④ Reporte de resultados y a quién va
+        report_enabled             BIT           NOT NULL CONSTRAINT df_cas_report_enabled DEFAULT (0),
+        report_day_offsets         NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_report_offsets DEFAULT (N'[]'), -- JSON [-3,0,3]
+        report_to_leader           BIT           NOT NULL CONSTRAINT df_cas_report_leader DEFAULT (0),
+        report_to_management       BIT           NOT NULL CONSTRAINT df_cas_report_management DEFAULT (0),
+        report_to_direction        BIT           NOT NULL CONSTRAINT df_cas_report_direction DEFAULT (0),
+        report_emails              NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_report_emails DEFAULT (N'[]'),
 
-        -- ④ Reporte de resultados
-        report_enabled        BIT           NOT NULL CONSTRAINT df_cas_report_enabled DEFAULT (0),
-        report_day_offsets    NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_report_offsets DEFAULT (N'[]'), -- JSON [-3,0,3]
-        report_emails         NVARCHAR(MAX) NOT NULL CONSTRAINT df_cas_report_emails DEFAULT (N'[]'),
-
-        created_date          DATETIME2(0)  NOT NULL CONSTRAINT df_cas_created_date DEFAULT (SYSUTCDATETIME()),
-        created_by            NVARCHAR(150) NOT NULL,
-        updated_date          DATETIME2(0)  NULL,
-        updated_by            NVARCHAR(150) NULL,
+        created_date               DATETIME2(0)  NOT NULL CONSTRAINT df_cas_created_date DEFAULT (SYSUTCDATETIME()),
+        created_by                 NVARCHAR(150) NOT NULL,
+        updated_date               DATETIME2(0)  NULL,
+        updated_by                 NVARCHAR(150) NULL,
 
         CONSTRAINT pk_course_alert_settings PRIMARY KEY CLUSTERED (id),
         CONSTRAINT fk_course_alert_settings_course FOREIGN KEY (course_id) REFERENCES dbo.course (id) ON DELETE CASCADE,
         -- UNIQUE en SQL Server admite un solo NULL: una general y, como máximo, una por curso.
         CONSTRAINT uq_course_alert_settings_course UNIQUE (course_id),
-        CONSTRAINT ck_cas_reminder_days CHECK (reminder_days_before BETWEEN 0 AND 60),
-        CONSTRAINT ck_cas_urgent_days CHECK (urgent_days_before BETWEEN 0 AND 60),
-        CONSTRAINT ck_cas_json CHECK (ISJSON(copy_emails) = 1 AND ISJSON(report_day_offsets) = 1 AND ISJSON(report_emails) = 1)
+        CONSTRAINT ck_cas_reminder_days CHECK (reminder_days_before BETWEEN 0 AND 365),
+        CONSTRAINT ck_cas_urgent_days CHECK (urgent_days_before BETWEEN 0 AND 365),
+        CONSTRAINT ck_cas_json CHECK (
+            ISJSON(welcome_copy_emails) = 1 AND ISJSON(reminder_copy_emails) = 1 AND ISJSON(urgent_copy_emails) = 1
+            AND ISJSON(report_day_offsets) = 1 AND ISJSON(report_emails) = 1)
     );
 END;
 GO
@@ -229,24 +261,36 @@ namespace DOCCB.Domain.Entities
         public int Id { get; set; }
         public int? CourseId { get; set; }
 
+        // ① Bienvenida
         public bool WelcomeEnabled { get; set; } = true;
-        public bool WelcomeCopy { get; set; }
+        public bool WelcomeCopyLeader { get; set; }
+        public bool WelcomeCopyManagement { get; set; }
+        public bool WelcomeCopyDirection { get; set; }
+        public List<string> WelcomeCopyEmails { get; set; } = [];
 
+        // ② Recordatorio normal
         public bool ReminderEnabled { get; set; } = true;
         public int ReminderDaysBefore { get; set; } = 7;
-        public bool ReminderCopy { get; set; }
+        public bool ReminderCopyLeader { get; set; }
+        public bool ReminderCopyManagement { get; set; }
+        public bool ReminderCopyDirection { get; set; }
+        public List<string> ReminderCopyEmails { get; set; } = [];
 
+        // ③ Urgente
         public bool UrgentEnabled { get; set; } = true;
         public int UrgentDaysBefore { get; set; } = 2;
-        public bool UrgentCopy { get; set; } = true;
+        public bool UrgentCopyLeader { get; set; } = true;
+        public bool UrgentCopyManagement { get; set; }
+        public bool UrgentCopyDirection { get; set; }
+        public List<string> UrgentCopyEmails { get; set; } = [];
 
-        public bool CopyLeader { get; set; } = true;
-        public bool CopyManagement { get; set; }
-        public List<string> CopyEmails { get; set; } = [];
-
+        // ④ Reporte de resultados
         public bool ReportEnabled { get; set; }
         /// <summary>Días respecto a la fecha límite: -3 = tres días antes, 0 = el día, 3 = tres días después.</summary>
         public List<int> ReportDayOffsets { get; set; } = [];
+        public bool ReportToLeader { get; set; }
+        public bool ReportToManagement { get; set; }
+        public bool ReportToDirection { get; set; }
         public List<string> ReportEmails { get; set; } = [];
 
         public DateTime CreatedDate { get; set; }
@@ -277,21 +321,32 @@ namespace DOCCB.Infraestructure.Configurations
 
             builder.Property(s => s.Id).HasColumnName("id");
             builder.Property(s => s.CourseId).HasColumnName("course_id");
+
             builder.Property(s => s.WelcomeEnabled).HasColumnName("welcome_enabled");
-            builder.Property(s => s.WelcomeCopy).HasColumnName("welcome_copy");
+            builder.Property(s => s.WelcomeCopyLeader).HasColumnName("welcome_copy_leader");
+            builder.Property(s => s.WelcomeCopyManagement).HasColumnName("welcome_copy_management");
+            builder.Property(s => s.WelcomeCopyDirection).HasColumnName("welcome_copy_direction");
+            builder.Property(s => s.WelcomeCopyEmails).HasColumnName("welcome_copy_emails");
+
             builder.Property(s => s.ReminderEnabled).HasColumnName("reminder_enabled");
             builder.Property(s => s.ReminderDaysBefore).HasColumnName("reminder_days_before");
-            builder.Property(s => s.ReminderCopy).HasColumnName("reminder_copy");
+            builder.Property(s => s.ReminderCopyLeader).HasColumnName("reminder_copy_leader");
+            builder.Property(s => s.ReminderCopyManagement).HasColumnName("reminder_copy_management");
+            builder.Property(s => s.ReminderCopyDirection).HasColumnName("reminder_copy_direction");
+            builder.Property(s => s.ReminderCopyEmails).HasColumnName("reminder_copy_emails");
+
             builder.Property(s => s.UrgentEnabled).HasColumnName("urgent_enabled");
             builder.Property(s => s.UrgentDaysBefore).HasColumnName("urgent_days_before");
-            builder.Property(s => s.UrgentCopy).HasColumnName("urgent_copy");
-            builder.Property(s => s.CopyLeader).HasColumnName("copy_leader");
-            builder.Property(s => s.CopyManagement).HasColumnName("copy_management");
-            builder.Property(s => s.ReportEnabled).HasColumnName("report_enabled");
+            builder.Property(s => s.UrgentCopyLeader).HasColumnName("urgent_copy_leader");
+            builder.Property(s => s.UrgentCopyManagement).HasColumnName("urgent_copy_management");
+            builder.Property(s => s.UrgentCopyDirection).HasColumnName("urgent_copy_direction");
+            builder.Property(s => s.UrgentCopyEmails).HasColumnName("urgent_copy_emails");
 
-            // EF Core 8: List<string> / List<int> se guardan como JSON en nvarchar(max).
-            builder.Property(s => s.CopyEmails).HasColumnName("copy_emails");
+            builder.Property(s => s.ReportEnabled).HasColumnName("report_enabled");
             builder.Property(s => s.ReportDayOffsets).HasColumnName("report_day_offsets");
+            builder.Property(s => s.ReportToLeader).HasColumnName("report_to_leader");
+            builder.Property(s => s.ReportToManagement).HasColumnName("report_to_management");
+            builder.Property(s => s.ReportToDirection).HasColumnName("report_to_direction");
             builder.Property(s => s.ReportEmails).HasColumnName("report_emails");
 
             builder.Property(s => s.CreatedDate).HasColumnName("created_date").HasColumnType("datetime2(0)");
@@ -308,6 +363,8 @@ namespace DOCCB.Infraestructure.Configurations
     }
 }
 ```
+
+> Las `List<string>` y `List<int>` se guardan como JSON en `nvarchar(max)` (EF Core 8), sin configuración extra.
 
 ### `DOCCbDbContext.cs` ✏️
 
@@ -349,11 +406,12 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Constants
 {
     public static class CourseAlertConstants
     {
-        public const int MaxDaysBefore = 60;
-        public const int MaxEmails = 30;
-        public const int MaxReportMoments = 5;
-        /// <summary>Los momentos del reporte van de 30 días antes a 30 días después de la fecha límite.</summary>
-        public const int MaxReportOffset = 30;
+        /// <summary>Días antes de la fecha límite: de 0 (el mismo día) a 365.</summary>
+        public const int MaxDaysBefore = 365;
+        public const int MaxEmails = 50;
+        public const int MaxReportMoments = 20;
+        /// <summary>Los momentos del reporte van de 365 días antes a 365 días después de la fecha límite.</summary>
+        public const int MaxReportOffset = 365;
         /// <summary>Si el servidor estuvo apagado el día exacto, el reporte se encola hasta 2 días después.</summary>
         public const int ReportGraceDays = 2;
         public const int PreviewMaxItems = 200;
@@ -361,6 +419,10 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Constants
         public const int PeoplePageSize = 100;
         /// <summary>Quién encoló, cuando lo hace el proceso programado.</summary>
         public const string SystemUser = "sistema";
+
+        /// <summary>Por qué recibe el reporte (course_email_queue.recipient_role).</summary>
+        public const string RoleLeader = "LEADER";
+        public const string RoleEmail = "EMAIL";
 
         // Plantillas que ya están en EmailsTemplate.
         public const string ReminderTemplate = "TemplateCourseReminderUser.html";
@@ -379,17 +441,17 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Constants
         public const string AlreadyCompleted = "La persona ya diligenció el formulario de finalización.";
         public const string DueDatePassed = "La fecha límite ya pasó.";
         public const string AssignmentRemoved = "La asignación ya no existe.";
+        public const string LeaderWithoutTeam = "Ninguna persona del grupo tiene a este líder.";
         public const string ProgressUnavailable = "No se pudo leer el avance del curso.";
 
         public const string CourseNotFound = "El curso no existe.";
-        public const string DaysInvalid = "Los días de anticipación deben estar entre 0 y 60.";
+        public const string DaysInvalid = "Los días de anticipación deben estar entre 0 y 365.";
         public const string UrgentMustBeCloser = "La alerta urgente debe enviarse más cerca de la fecha límite que el recordatorio normal.";
-        public const string CopyWithoutRecipients = "Activaste copias, pero no hay a quién enviarlas: elige el líder o la gerencia, o agrega correos.";
-        public const string TooManyEmails = "Puedes agregar hasta 30 correos en cada lista.";
+        public const string TooManyEmails = "Puedes agregar hasta 50 correos en cada lista.";
         public const string InvalidEmails = "Estos correos no son válidos: {0}.";
-        public const string ReportWithoutMoments = "Elige al menos un momento para enviar el reporte de resultados.";
-        public const string ReportWithoutEmails = "Agrega al menos un correo para el reporte de resultados.";
-        public const string ReportMomentsInvalid = "Los momentos del reporte van de 30 días antes a 30 días después de la fecha límite (máximo 5).";
+        public const string ReportWithoutMoments = "Agrega al menos un momento para enviar el reporte de resultados.";
+        public const string ReportWithoutRecipients = "Elige quién recibe el reporte: líderes, gerencia, dirección u otros correos.";
+        public const string ReportMomentsInvalid = "Los momentos del reporte van de 365 días antes a 365 días después de la fecha límite (máximo 20).";
         public const string ConcurrentChange = "Otra persona guardó esta configuración al mismo tiempo. Recarga la página e intenta de nuevo.";
         public const string UnexpectedError = "No se pudo completar la operación. Intenta de nuevo.";
     }
@@ -398,30 +460,52 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Constants
 
 ### `Dtos/CourseAlertDtos.cs`
 
+La pantalla trabaja con un bloque por alerta. La tabla es plana; `CourseAlertSettingsRules` traduce entre los dos.
+
 ```csharp
 namespace DOCCB.Application.Features.CourseAlerts.Application.Dtos
 {
+    /// <summary>A quién se copia una alerta (o a quién va el reporte).</summary>
+    public class CourseAlertRecipientsDto
+    {
+        /// <summary>El líder de cada persona.</summary>
+        public bool Leader { get; set; }
+        /// <summary>La gerencia de cada persona. Pendiente: el DataLake aún no trae el correo del gerente.</summary>
+        public bool Management { get; set; }
+        /// <summary>La dirección de cada persona. Pendiente: el DataLake aún no trae el correo del director.</summary>
+        public bool Direction { get; set; }
+        public List<string> Emails { get; set; } = [];
+    }
+
+    public class CourseAlertWelcomeDto
+    {
+        public bool Enabled { get; set; }
+        public CourseAlertRecipientsDto Copy { get; set; } = new();
+    }
+
+    public class CourseAlertReminderDto
+    {
+        public bool Enabled { get; set; }
+        /// <summary>Días antes de la fecha límite (0 = el mismo día).</summary>
+        public int DaysBefore { get; set; }
+        public CourseAlertRecipientsDto Copy { get; set; } = new();
+    }
+
+    public class CourseAlertReportDto
+    {
+        public bool Enabled { get; set; }
+        /// <summary>-3 = tres días antes, 0 = el día, 3 = tres días después.</summary>
+        public List<int> DayOffsets { get; set; } = [];
+        public CourseAlertRecipientsDto To { get; set; } = new();
+    }
+
     /// <summary>Lo que se edita en pantalla (general o de un curso). UpdatedDate/UpdatedBy solo van en la respuesta.</summary>
     public class CourseAlertSettingsDto
     {
-        public bool WelcomeEnabled { get; set; }
-        public bool WelcomeCopy { get; set; }
-
-        public bool ReminderEnabled { get; set; }
-        public int ReminderDaysBefore { get; set; }
-        public bool ReminderCopy { get; set; }
-
-        public bool UrgentEnabled { get; set; }
-        public int UrgentDaysBefore { get; set; }
-        public bool UrgentCopy { get; set; }
-
-        public bool CopyLeader { get; set; }
-        public bool CopyManagement { get; set; }
-        public List<string> CopyEmails { get; set; } = [];
-
-        public bool ReportEnabled { get; set; }
-        public List<int> ReportDayOffsets { get; set; } = [];
-        public List<string> ReportEmails { get; set; } = [];
+        public CourseAlertWelcomeDto Welcome { get; set; } = new();
+        public CourseAlertReminderDto Reminder { get; set; } = new();
+        public CourseAlertReminderDto Urgent { get; set; } = new();
+        public CourseAlertReportDto Report { get; set; } = new();
 
         public DateTime? UpdatedDate { get; set; }
         public string? UpdatedBy { get; set; }
@@ -530,6 +614,14 @@ using DOCCB.Domain.Entities;
 
 namespace DOCCB.Application.Features.CourseAlerts.Application.Helpers
 {
+    /// <summary>A quién se copia una alerta (o a quién va el reporte), ya leído de la configuración.</summary>
+    public sealed record CourseAlertRecipients(bool Leader, bool Management, bool Direction, IReadOnlyList<string> Emails)
+    {
+        public static readonly CourseAlertRecipients None = new(false, false, false, []);
+
+        public bool IsEmpty => !Leader && !Management && !Direction && Emails.Count == 0;
+    }
+
     public static class CourseAlertSettingsRules
     {
         /// <summary>Los mismos valores por defecto del script. Se usan si la general no existe en la base.</summary>
@@ -538,134 +630,159 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Helpers
         /// <summary>Limpia y valida lo que llega de la pantalla. Devuelve la versión normalizada.</summary>
         public static CourseAlertSettingsDto Normalize(CourseAlertSettingsDto dto, List<string> errors)
         {
-            if (dto.ReminderDaysBefore is < 0 or > CourseAlertConstants.MaxDaysBefore
-                || dto.UrgentDaysBefore is < 0 or > CourseAlertConstants.MaxDaysBefore)
+            var welcome = dto.Welcome ?? new();
+            var reminder = dto.Reminder ?? new();
+            var urgent = dto.Urgent ?? new();
+            var report = dto.Report ?? new();
+
+            if (reminder.DaysBefore is < 0 or > CourseAlertConstants.MaxDaysBefore
+                || urgent.DaysBefore is < 0 or > CourseAlertConstants.MaxDaysBefore)
             {
                 errors.Add(CourseAlertConstants.DaysInvalid);
             }
 
-            if (dto.ReminderEnabled && dto.UrgentEnabled && dto.UrgentDaysBefore >= dto.ReminderDaysBefore)
+            if (reminder.Enabled && urgent.Enabled && urgent.DaysBefore >= reminder.DaysBefore)
             {
                 errors.Add(CourseAlertConstants.UrgentMustBeCloser);
             }
 
-            var copyEmails = NormalizeEmails(dto.CopyEmails, errors);
-            var reportEmails = NormalizeEmails(dto.ReportEmails, errors);
-
-            var anyCopy = (dto.WelcomeEnabled && dto.WelcomeCopy)
-                || (dto.ReminderEnabled && dto.ReminderCopy)
-                || (dto.UrgentEnabled && dto.UrgentCopy);
-
-            if (anyCopy && !dto.CopyLeader && !dto.CopyManagement && copyEmails.Count == 0)
-            {
-                errors.Add(CourseAlertConstants.CopyWithoutRecipients);
-            }
-
-            var offsets = (dto.ReportDayOffsets ?? []).Distinct().Order().ToList();
+            var offsets = (report.DayOffsets ?? []).Distinct().Order().ToList();
             if (offsets.Count > CourseAlertConstants.MaxReportMoments
                 || offsets.Any(offset => Math.Abs(offset) > CourseAlertConstants.MaxReportOffset))
             {
                 errors.Add(CourseAlertConstants.ReportMomentsInvalid);
             }
 
-            if (dto.ReportEnabled && offsets.Count == 0)
+            if (report.Enabled && offsets.Count == 0)
             {
                 errors.Add(CourseAlertConstants.ReportWithoutMoments);
             }
 
-            if (dto.ReportEnabled && reportEmails.Count == 0)
+            var reportTo = NormalizeRecipients(report.To, errors);
+            if (report.Enabled && !reportTo.Leader && !reportTo.Management && !reportTo.Direction && reportTo.Emails.Count == 0)
             {
-                errors.Add(CourseAlertConstants.ReportWithoutEmails);
+                errors.Add(CourseAlertConstants.ReportWithoutRecipients);
             }
 
             return new CourseAlertSettingsDto
             {
-                WelcomeEnabled = dto.WelcomeEnabled,
-                WelcomeCopy = dto.WelcomeCopy,
-                ReminderEnabled = dto.ReminderEnabled,
-                ReminderDaysBefore = dto.ReminderDaysBefore,
-                ReminderCopy = dto.ReminderCopy,
-                UrgentEnabled = dto.UrgentEnabled,
-                UrgentDaysBefore = dto.UrgentDaysBefore,
-                UrgentCopy = dto.UrgentCopy,
-                CopyLeader = dto.CopyLeader,
-                CopyManagement = dto.CopyManagement,
-                CopyEmails = copyEmails,
-                ReportEnabled = dto.ReportEnabled,
-                ReportDayOffsets = offsets,
-                ReportEmails = reportEmails,
+                Welcome = new() { Enabled = welcome.Enabled, Copy = NormalizeRecipients(welcome.Copy, errors) },
+                Reminder = new() { Enabled = reminder.Enabled, DaysBefore = reminder.DaysBefore, Copy = NormalizeRecipients(reminder.Copy, errors) },
+                Urgent = new() { Enabled = urgent.Enabled, DaysBefore = urgent.DaysBefore, Copy = NormalizeRecipients(urgent.Copy, errors) },
+                Report = new() { Enabled = report.Enabled, DayOffsets = offsets, To = reportTo },
             };
         }
 
         public static void Apply(CourseAlertSettingsDto draft, CourseAlertSettings entity)
         {
-            entity.WelcomeEnabled = draft.WelcomeEnabled;
-            entity.WelcomeCopy = draft.WelcomeCopy;
-            entity.ReminderEnabled = draft.ReminderEnabled;
-            entity.ReminderDaysBefore = draft.ReminderDaysBefore;
-            entity.ReminderCopy = draft.ReminderCopy;
-            entity.UrgentEnabled = draft.UrgentEnabled;
-            entity.UrgentDaysBefore = draft.UrgentDaysBefore;
-            entity.UrgentCopy = draft.UrgentCopy;
-            entity.CopyLeader = draft.CopyLeader;
-            entity.CopyManagement = draft.CopyManagement;
-            entity.CopyEmails = draft.CopyEmails;
-            entity.ReportEnabled = draft.ReportEnabled;
-            entity.ReportDayOffsets = draft.ReportDayOffsets;
-            entity.ReportEmails = draft.ReportEmails;
+            entity.WelcomeEnabled = draft.Welcome.Enabled;
+            entity.WelcomeCopyLeader = draft.Welcome.Copy.Leader;
+            entity.WelcomeCopyManagement = draft.Welcome.Copy.Management;
+            entity.WelcomeCopyDirection = draft.Welcome.Copy.Direction;
+            entity.WelcomeCopyEmails = draft.Welcome.Copy.Emails;
+
+            entity.ReminderEnabled = draft.Reminder.Enabled;
+            entity.ReminderDaysBefore = draft.Reminder.DaysBefore;
+            entity.ReminderCopyLeader = draft.Reminder.Copy.Leader;
+            entity.ReminderCopyManagement = draft.Reminder.Copy.Management;
+            entity.ReminderCopyDirection = draft.Reminder.Copy.Direction;
+            entity.ReminderCopyEmails = draft.Reminder.Copy.Emails;
+
+            entity.UrgentEnabled = draft.Urgent.Enabled;
+            entity.UrgentDaysBefore = draft.Urgent.DaysBefore;
+            entity.UrgentCopyLeader = draft.Urgent.Copy.Leader;
+            entity.UrgentCopyManagement = draft.Urgent.Copy.Management;
+            entity.UrgentCopyDirection = draft.Urgent.Copy.Direction;
+            entity.UrgentCopyEmails = draft.Urgent.Copy.Emails;
+
+            entity.ReportEnabled = draft.Report.Enabled;
+            entity.ReportDayOffsets = draft.Report.DayOffsets;
+            entity.ReportToLeader = draft.Report.To.Leader;
+            entity.ReportToManagement = draft.Report.To.Management;
+            entity.ReportToDirection = draft.Report.To.Direction;
+            entity.ReportEmails = draft.Report.To.Emails;
         }
 
         public static CourseAlertSettingsDto ToDto(CourseAlertSettings s) => new()
         {
-            WelcomeEnabled = s.WelcomeEnabled,
-            WelcomeCopy = s.WelcomeCopy,
-            ReminderEnabled = s.ReminderEnabled,
-            ReminderDaysBefore = s.ReminderDaysBefore,
-            ReminderCopy = s.ReminderCopy,
-            UrgentEnabled = s.UrgentEnabled,
-            UrgentDaysBefore = s.UrgentDaysBefore,
-            UrgentCopy = s.UrgentCopy,
-            CopyLeader = s.CopyLeader,
-            CopyManagement = s.CopyManagement,
-            CopyEmails = [.. s.CopyEmails],
-            ReportEnabled = s.ReportEnabled,
-            ReportDayOffsets = [.. s.ReportDayOffsets],
-            ReportEmails = [.. s.ReportEmails],
+            Welcome = new()
+            {
+                Enabled = s.WelcomeEnabled,
+                Copy = ToDto(CopyOf(s, EmailAlertTypes.CourseAssigned)),
+            },
+            Reminder = new()
+            {
+                Enabled = s.ReminderEnabled,
+                DaysBefore = s.ReminderDaysBefore,
+                Copy = ToDto(CopyOf(s, EmailAlertTypes.CourseDueReminder)),
+            },
+            Urgent = new()
+            {
+                Enabled = s.UrgentEnabled,
+                DaysBefore = s.UrgentDaysBefore,
+                Copy = ToDto(CopyOf(s, EmailAlertTypes.CourseDueUrgent)),
+            },
+            Report = new()
+            {
+                Enabled = s.ReportEnabled,
+                DayOffsets = [.. s.ReportDayOffsets],
+                To = ToDto(ReportTo(s)),
+            },
             UpdatedDate = s.UpdatedDate ?? s.CreatedDate,
             UpdatedBy = s.UpdatedBy ?? s.CreatedBy,
         };
 
-        /// <summary>¿Esta alerta lleva copia (líder, gerencia, correos fijos)?</summary>
-        public static bool CopyFor(CourseAlertSettings s, string alertType) => alertType switch
+        /// <summary>A quién se copia esta alerta. None si el tipo no lleva copia.</summary>
+        public static CourseAlertRecipients CopyOf(CourseAlertSettings s, string alertType) => alertType switch
         {
-            EmailAlertTypes.CourseAssigned => s.WelcomeCopy,
-            EmailAlertTypes.CourseDueReminder => s.ReminderCopy,
-            EmailAlertTypes.CourseDueUrgent => s.UrgentCopy,
-            _ => false,
+            EmailAlertTypes.CourseAssigned => new(s.WelcomeCopyLeader, s.WelcomeCopyManagement, s.WelcomeCopyDirection, s.WelcomeCopyEmails),
+            EmailAlertTypes.CourseDueReminder => new(s.ReminderCopyLeader, s.ReminderCopyManagement, s.ReminderCopyDirection, s.ReminderCopyEmails),
+            EmailAlertTypes.CourseDueUrgent => new(s.UrgentCopyLeader, s.UrgentCopyManagement, s.UrgentCopyDirection, s.UrgentCopyEmails),
+            _ => CourseAlertRecipients.None,
         };
 
-        /// <summary>Para la vista previa: a quién se copiaría, sin consultar Graph.</summary>
-        public static List<string> DescribeCopies(CourseAlertSettings s, string alertType)
-        {
-            if (!CopyFor(s, alertType))
-            {
-                return [];
-            }
+        /// <summary>A quién va el reporte de resultados.</summary>
+        public static CourseAlertRecipients ReportTo(CourseAlertSettings s) =>
+            new(s.ReportToLeader, s.ReportToManagement, s.ReportToDirection, s.ReportEmails);
 
+        /// <summary>Para la vista previa: a quién se copiaría, sin consultar el DataLake ni Graph.</summary>
+        public static List<string> DescribeCopies(CourseAlertRecipients copy)
+        {
             var copies = new List<string>();
-            if (s.CopyLeader)
+            if (copy.Leader)
             {
                 copies.Add("Líder");
             }
 
-            if (s.CopyManagement)
+            if (copy.Management)
             {
                 copies.Add("Gerencia");
             }
 
-            copies.AddRange(s.CopyEmails);
+            if (copy.Direction)
+            {
+                copies.Add("Dirección");
+            }
+
+            copies.AddRange(copy.Emails);
             return copies;
         }
+
+        private static CourseAlertRecipientsDto ToDto(CourseAlertRecipients r) => new()
+        {
+            Leader = r.Leader,
+            Management = r.Management,
+            Direction = r.Direction,
+            Emails = [.. r.Emails],
+        };
+
+        private static CourseAlertRecipientsDto NormalizeRecipients(CourseAlertRecipientsDto? dto, List<string> errors) => new()
+        {
+            Leader = dto?.Leader ?? false,
+            Management = dto?.Management ?? false,
+            Direction = dto?.Direction ?? false,
+            Emails = NormalizeEmails(dto?.Emails, errors),
+        };
 
         /// <summary>Minúsculas, sin repetidos ni vacíos. Los inválidos se reportan (no se descartan en silencio).</summary>
         private static List<string> NormalizeEmails(IEnumerable<string>? emails, List<string> errors)
@@ -757,9 +874,12 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Helpers
         public static string ReminderKey(string alertType, int assignmentUserId, DateOnly dueDate) =>
             $"{alertType}:{assignmentUserId}:{dueDate:yyyy-MM-dd}";
 
-        /// <summary>Una por asignación, fecha límite, momento y destinatario.</summary>
-        public static string ReportKey(int assignmentId, DateOnly dueDate, int offset, string email) =>
-            $"{EmailAlertTypes.CourseResultsReport}:{assignmentId}:{dueDate:yyyy-MM-dd}:{offset}:{email.ToLowerInvariant()}";
+        /// <summary>
+        /// Una por asignación, fecha límite, momento, rol y destinatario. El rol separa el reporte del equipo
+        /// (líder) del reporte completo (otros correos) aunque sea el mismo correo.
+        /// </summary>
+        public static string ReportKey(int assignmentId, DateOnly dueDate, int offset, string role, string email) =>
+            $"{EmailAlertTypes.CourseResultsReport}:{assignmentId}:{dueDate:yyyy-MM-dd}:{offset}:{role}:{email.ToLowerInvariant()}";
     }
 }
 ```
@@ -977,11 +1097,173 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
 
 ---
 
-## 8. Paso 5 — Las copias: líder y gerencia
+## 8. Paso 5 — Líder, gerencia y dirección: el DataLake
 
 El parámetro `cc` de `SendTemplatedEmailAsync` ya está (guía de la cola, Paso 6).
 
-### `IGraphDirectoryService` ✏️ — el líder de una persona
+### `Interfaces/IOrganizationDirectory.cs`
+
+```csharp
+namespace DOCCB.Application.Features.CourseAlerts.Application.Interfaces
+{
+    /// <summary>Una persona en el maestro de empleados: su líder, su gerencia y su dirección.</summary>
+    public sealed record OrganizationPerson(
+        string Email,
+        string FullName,
+        string? LeaderEmail,
+        string? ManagementName,
+        string? DirectionName);
+
+    public interface IOrganizationDirectory
+    {
+        /// <summary>
+        /// Las personas que encuentre, por correo corporativo (sin distinguir mayúsculas).
+        /// Vacío si el DataLake está apagado o no responde. Nunca lanza.
+        /// </summary>
+        Task<IReadOnlyDictionary<string, OrganizationPerson>> FindByEmailsAsync(IReadOnlyCollection<string> emails, CancellationToken ct);
+    }
+}
+```
+
+### `Services/DataLakeOrganizationDirectory.cs`
+
+El DataLake no filtra empleados por correo. Por eso se trae el maestro completo una vez (páginas de 200, el máximo que acepta) y se guarda en memoria.
+
+```csharp
+using DOCCB.Application.Features.CourseAlerts.Application.Interfaces;
+using DOCCB.Application.Features.DataLake.Application.DTOs;
+using DOCCB.Application.Features.DataLake.Application.Interfaces;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+
+namespace DOCCB.Application.Features.CourseAlerts.Application.Services
+{
+    /// <summary>
+    /// El maestro de empleados del DataLake, en memoria 60 minutos para toda la aplicación.
+    /// Si el DataLake falla, se sigue sin él y no se vuelve a intentar durante 5 minutos.
+    /// </summary>
+    public class DataLakeOrganizationDirectory(
+        IDataLakeEmployeeClient dataLake,
+        IMemoryCache cache,
+        IConfiguration configuration,
+        ILogger<DataLakeOrganizationDirectory> logger) : IOrganizationDirectory
+    {
+        private const string CacheKey = "course-alerts:organization";
+        private const int PageSize = 200;
+        private static readonly TimeSpan Fresh = TimeSpan.FromMinutes(60);
+        private static readonly TimeSpan RetryAfterError = TimeSpan.FromMinutes(5);
+        private static readonly IReadOnlyDictionary<string, OrganizationPerson> Empty = new Dictionary<string, OrganizationPerson>();
+
+        /// <summary>Una sola carga a la vez: el proceso y varios correos pueden pedirla al mismo tiempo.</summary>
+        private static readonly SemaphoreSlim LoadLock = new(1, 1);
+
+        private readonly IDataLakeEmployeeClient _dataLake = dataLake;
+        private readonly IMemoryCache _cache = cache;
+        private readonly IConfiguration _configuration = configuration;
+        private readonly ILogger<DataLakeOrganizationDirectory> _logger = logger;
+
+        public async Task<IReadOnlyDictionary<string, OrganizationPerson>> FindByEmailsAsync(IReadOnlyCollection<string> emails, CancellationToken ct)
+        {
+            var everyone = await GetEveryoneAsync(ct);
+            var found = new Dictionary<string, OrganizationPerson>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var email in emails)
+            {
+                if (everyone.TryGetValue(email.Trim(), out var person))
+                {
+                    found[email] = person;
+                }
+            }
+
+            return found;
+        }
+
+        private async Task<IReadOnlyDictionary<string, OrganizationPerson>> GetEveryoneAsync(CancellationToken ct)
+        {
+            if (_cache.TryGetValue(CacheKey, out IReadOnlyDictionary<string, OrganizationPerson>? cached) && cached is not null)
+            {
+                return cached;
+            }
+
+            if (!bool.TryParse(_configuration["DataLakeApi:Enabled"], out var enabled) || !enabled)
+            {
+                return Empty;
+            }
+
+            await LoadLock.WaitAsync(ct);
+            try
+            {
+                // Otro hilo pudo cargarlo mientras se esperaba el turno.
+                if (_cache.TryGetValue(CacheKey, out cached) && cached is not null)
+                {
+                    return cached;
+                }
+
+                var everyone = await LoadAsync(ct);
+                _cache.Set(CacheKey, everyone, Fresh);
+                _logger.LogInformation("Maestro de empleados del DataLake en memoria: {Count} personas.", everyone.Count);
+                return everyone;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "No se pudo leer el maestro de empleados del DataLake. Se sigue sin líder, gerencia ni dirección.");
+                _cache.Set(CacheKey, Empty, RetryAfterError);
+                return Empty;
+            }
+            finally
+            {
+                LoadLock.Release();
+            }
+        }
+
+        private async Task<IReadOnlyDictionary<string, OrganizationPerson>> LoadAsync(CancellationToken ct)
+        {
+            var employees = new List<ClickEmployeeDto>();
+            for (var page = 1; ; page++)
+            {
+                var result = await _dataLake.GetEmployeesAsync(new DataLakeEmployeeQueryDto(PageNumber: page, PageSize: PageSize), ct);
+                employees.AddRange(result.Items);
+
+                if (result.Items.Count < PageSize || employees.Count >= result.TotalCount)
+                {
+                    break;
+                }
+            }
+
+            // Correo de cada líder por su código de empleado: el catálogo de líderes y, si falta, el propio maestro.
+            var emailByCode = (await _dataLake.GetLeadersAsync(ct))
+                .Where(leader => !string.IsNullOrWhiteSpace(leader.CorporateEmail))
+                .GroupBy(leader => leader.EmployeeCode)
+                .ToDictionary(g => g.Key, g => g.First().CorporateEmail.Trim().ToLowerInvariant());
+
+            foreach (var employee in employees.Where(e => !string.IsNullOrWhiteSpace(e.CorporateEmail)))
+            {
+                emailByCode.TryAdd(employee.EmployeeCode, employee.CorporateEmail!.Trim().ToLowerInvariant());
+            }
+
+            return employees
+                .Where(e => !string.IsNullOrWhiteSpace(e.CorporateEmail))
+                .GroupBy(e => e.CorporateEmail!.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    g => g.Key,
+                    g =>
+                    {
+                        var e = g.First();
+                        var leaderEmail = e.ManagerEmployeeCode is { } code && emailByCode.TryGetValue(code, out var leader) ? leader : null;
+                        return new OrganizationPerson(g.Key.ToLowerInvariant(), e.FullName, leaderEmail, e.ManagementName, e.DirectionName);
+                    },
+                    StringComparer.OrdinalIgnoreCase);
+        }
+    }
+}
+```
+
+> **Si la integración del DataLake todavía no está en la rama de cursos**, `IDataLakeEmployeeClient` no existe y esta clase no compila. Mientras tanto, registra una versión vacía (ver "Registro"): el líder sale de Graph y lo demás sigue igual.
+>
+> **Con `DataLakeApi:Enabled` en `false`** (por ejemplo, en desarrollo), esta clase devuelve vacío sin llamar al DataLake.
+
+### `IGraphDirectoryService` ✏️ — el líder según Entra ID (respaldo)
 
 ```csharp
 /// <summary>Líder (manager) de la persona en Entra ID. null si no tiene.</summary>
@@ -1009,19 +1291,17 @@ public Task<DirectoryUser?> GetManagerAsync(string email, CancellationToken ct) 
 });
 ```
 
-> Usa el permiso de aplicación `User.Read.All`, el mismo que ya necesita "Por líder" para traer equipos.
-
 ### `Interfaces/ICourseAlertCopyResolver.cs`
 
 ```csharp
-using DOCCB.Domain.Entities;
+using DOCCB.Application.Features.CourseAlerts.Application.Helpers;
 
 namespace DOCCB.Application.Features.CourseAlerts.Application.Interfaces
 {
     public interface ICourseAlertCopyResolver
     {
-        /// <summary>Copias para esta persona según la configuración (líder, gerencia y correos fijos), sin ella misma. Nunca lanza.</summary>
-        Task<IReadOnlyList<string>> ResolveAsync(CourseAlertSettings settings, string userEmail, CancellationToken ct);
+        /// <summary>Las copias de una alerta para esta persona (líder, gerencia, dirección y correos), sin ella misma. Nunca lanza.</summary>
+        Task<IReadOnlyList<string>> ResolveAsync(CourseAlertRecipients copy, string userEmail, CancellationToken ct);
     }
 }
 ```
@@ -1029,36 +1309,38 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Interfaces
 ### `Services/CourseAlertCopyResolver.cs`
 
 ```csharp
+using DOCCB.Application.Features.CourseAlerts.Application.Helpers;
 using DOCCB.Application.Features.CourseAlerts.Application.Interfaces;
 using DOCCB.Application.Features.Directory.Application.Exceptions;
 using DOCCB.Application.Features.Directory.Application.Interfaces;
-using DOCCB.Domain.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace DOCCB.Application.Features.CourseAlerts.Application.Services
 {
     /// <summary>Scoped: lo usan los composers, que corren en el scope de cada correo.</summary>
     public class CourseAlertCopyResolver(
+        IOrganizationDirectory organization,
         IGraphDirectoryService directory,
         ILogger<CourseAlertCopyResolver> logger) : ICourseAlertCopyResolver
     {
+        private readonly IOrganizationDirectory _organization = organization;
         private readonly IGraphDirectoryService _directory = directory;
         private readonly ILogger<CourseAlertCopyResolver> _logger = logger;
 
-        public async Task<IReadOnlyList<string>> ResolveAsync(CourseAlertSettings settings, string userEmail, CancellationToken ct)
+        public async Task<IReadOnlyList<string>> ResolveAsync(CourseAlertRecipients copy, string userEmail, CancellationToken ct)
         {
-            var copies = new List<string>(settings.CopyEmails);
+            var copies = new List<string>(copy.Emails);
 
-            if (settings.CopyLeader && await GetLeaderAsync(userEmail, ct) is { } leader)
+            if (copy.Leader && await GetLeaderAsync(userEmail, ct) is { } leader)
             {
                 copies.Add(leader);
             }
 
-            if (settings.CopyManagement)
+            if (copy.Management || copy.Direction)
             {
-                // PENDIENTE: no hay fuente con los correos de cada gerencia (IManagementDirectory solo da el nombre
-                // y su consulta aún es un TODO). Cuando exista, los correos se agregan aquí.
-                _logger.LogWarning("La copia a la gerencia está activa, pero aún no hay fuente de correos de gerencia: no se envía.");
+                // PENDIENTE: el DataLake da el NOMBRE de la gerencia y la dirección de la persona, pero no el correo
+                // de su responsable. Cuando el catálogo lo traiga, se agrega aquí (como el líder).
+                _logger.LogWarning("Copia a gerencia o dirección activa, pero el DataLake aún no trae el correo del responsable: no se envía.");
             }
 
             return copies
@@ -1068,8 +1350,15 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
                 .ToList();
         }
 
+        /// <summary>El líder según el DataLake y, si no aparece, según Entra ID.</summary>
         private async Task<string?> GetLeaderAsync(string userEmail, CancellationToken ct)
         {
+            var people = await _organization.FindByEmailsAsync([userEmail], ct);
+            if (people.Values.FirstOrDefault()?.LeaderEmail is { } fromDataLake)
+            {
+                return fromDataLake;
+            }
+
             try
             {
                 return (await _directory.GetManagerAsync(userEmail, ct))?.Email;
@@ -1077,13 +1366,41 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
             catch (DirectoryUnavailableException ex)
             {
                 // El correo a la persona igual sale; solo sin la copia al líder.
-                _logger.LogWarning(ex, "No se pudo consultar el líder de {User} en el directorio.", userEmail);
+                _logger.LogWarning(ex, "No se pudo consultar el líder de {User}.", userEmail);
                 return null;
             }
         }
     }
 }
 ```
+
+### `Features/Courses/Application/Services/ManagementDirectory.cs` ✏️ — la gerencia del formulario
+
+`IManagementDirectory` era un TODO que devolvía `null`: el formulario de finalización mostraba "No disponible" y la gerencia de `course_assignment_completion` quedaba vacía. Con el DataLake ya se puede llenar:
+
+```csharp
+public class ManagementDirectory(
+    IOrganizationDirectory organization,
+    ILogger<ManagementDirectory> logger) : IManagementDirectory
+{
+    public async Task<string?> GetManagementAsync(CurrentUserIdentity user, CancellationToken ct)
+    {
+        try
+        {
+            var people = await organization.FindByEmailsAsync(user.Emails.ToList(), ct);
+            return people.Values.Select(p => p.ManagementName?.Trim()).FirstOrDefault(name => !string.IsNullOrEmpty(name));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Si el directorio no responde, el formulario se muestra igual con la gerencia "No disponible".
+            logger.LogWarning(ex, "No se pudo consultar la gerencia en el DataLake.");
+            return null;
+        }
+    }
+}
+```
+
+> Ya no usa `IUserManagementService`: quita esa dependencia y el `using` de la clase.
 
 ---
 
@@ -1161,12 +1478,14 @@ public static CourseEmailQueueItem ForPersonId(string alertType, int assignmentU
     CreatedBy = createdBy,
 };
 
-/// <summary>Un correo de una asignación a un destinatario fijo (el reporte).</summary>
-public static CourseEmailQueueItem ForRecipient(string alertType, int assignmentId, string recipientEmail, string dedupeKey, DateTime now, string createdBy) => new()
+/// <summary>Un correo de una asignación a un destinatario fijo (el reporte). role: por qué lo recibe (LEADER, EMAIL).</summary>
+public static CourseEmailQueueItem ForRecipient(
+    string alertType, int assignmentId, string recipientEmail, string role, string dedupeKey, DateTime now, string createdBy) => new()
 {
     AlertType = alertType,
     AssignmentId = assignmentId,
     RecipientEmail = recipientEmail,
+    RecipientRole = role,
     DedupeKey = dedupeKey,
     Status = CourseEmailQueueStatus.Pending,
     NextAttemptDate = now,
@@ -1290,6 +1609,7 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
     public class CourseAlertJobService(
         ITransactionExecutorHelper transactionHelper,
         ICourseAlertSettingsService settingsService,
+        IOrganizationDirectory organization,
         ICourseEmailQueueRepository queue,
         ICourseEmailQueueSignal queueSignal,
         TimeProvider timeProvider,
@@ -1297,6 +1617,7 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
     {
         private readonly ITransactionExecutorHelper _transactionHelper = transactionHelper;
         private readonly ICourseAlertSettingsService _settingsService = settingsService;
+        private readonly IOrganizationDirectory _organization = organization;
         private readonly ICourseEmailQueueRepository _queue = queue;
         private readonly ICourseEmailQueueSignal _queueSignal = queueSignal;
         private readonly TimeProvider _timeProvider = timeProvider;
@@ -1334,7 +1655,7 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
                         GroupName = person.GroupName,
                         DueDate = person.DueDate,
                         To = person.Email,
-                        Copies = CourseAlertSettingsRules.DescribeCopies(personSettings, alertType),
+                        Copies = CourseAlertSettingsRules.DescribeCopies(CourseAlertSettingsRules.CopyOf(personSettings, alertType)),
                     }));
             }
 
@@ -1349,7 +1670,8 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
                 foreach (var assignment in await GetAssignmentsDueBetweenAsync(dueFrom, dueTo))
                 {
                     var assignmentSettings = settings.For(assignment.CourseId);
-                    if (!assignmentSettings.ReportEnabled || assignmentSettings.ReportEmails.Count == 0)
+                    var to = CourseAlertSettingsRules.ReportTo(assignmentSettings);
+                    if (!assignmentSettings.ReportEnabled || to.IsEmpty)
                     {
                         continue;
                     }
@@ -1361,18 +1683,19 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
                         continue;
                     }
 
-                    foreach (var email in assignmentSettings.ReportEmails)
+                    foreach (var (role, email) in await GetReportRecipientsAsync(assignment, to, ct))
                     {
-                        var key = CourseAlertSchedule.ReportKey(assignment.AssignmentId, assignment.DueDate, offset.Value, email);
+                        var key = CourseAlertSchedule.ReportKey(assignment.AssignmentId, assignment.DueDate, offset.Value, role, email);
                         planned.Add(new PlannedAlert(
-                            CourseEmailQueueFactory.ForRecipient(EmailAlertTypes.CourseResultsReport, assignment.AssignmentId, email, key, now, requestedBy),
+                            CourseEmailQueueFactory.ForRecipient(
+                                EmailAlertTypes.CourseResultsReport, assignment.AssignmentId, email, role, key, now, requestedBy),
                             new CourseAlertPreviewItemDto
                             {
                                 AlertType = EmailAlertTypes.CourseResultsReport,
                                 CourseName = assignment.CourseName,
                                 GroupName = assignment.GroupName,
                                 DueDate = assignment.DueDate,
-                                To = email,
+                                To = role == CourseAlertConstants.RoleLeader ? $"{email} (líder: su equipo)" : email,
                             }));
                     }
                 }
@@ -1405,6 +1728,43 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
             return ResponseDtoHelper.CreateSuccessResponseDto(result);
         }
 
+        // ── Destinatarios del reporte ───────────────────────────────────
+
+        /// <summary>
+        /// Los "otros correos" reciben el grupo completo. Cada líder (según el DataLake) recibe su equipo.
+        /// Gerencia y dirección: pendientes hasta que el DataLake traiga el correo del responsable.
+        /// </summary>
+        private async Task<List<(string Role, string Email)>> GetReportRecipientsAsync(
+            CourseAlertAssignment assignment, CourseAlertRecipients to, CancellationToken ct)
+        {
+            var recipients = to.Emails.Select(email => (CourseAlertConstants.RoleEmail, email)).ToList();
+
+            if (to.Leader)
+            {
+                var members = await GetMemberEmailsAsync(assignment.AssignmentId);
+                var people = await _organization.FindByEmailsAsync(members, ct);
+                if (people.Count == 0 && members.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "Reporte a líderes de la asignación {AssignmentId}: el DataLake no respondió o no encontró a nadie; no se encolan.",
+                        assignment.AssignmentId);
+                }
+
+                recipients.AddRange(people.Values
+                    .Select(person => person.LeaderEmail)
+                    .Where(leader => !string.IsNullOrWhiteSpace(leader))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(leader => (CourseAlertConstants.RoleLeader, leader!)));
+            }
+
+            if (to.Management || to.Direction)
+            {
+                _logger.LogWarning("Reporte a gerencia o dirección activo, pero el DataLake aún no trae el correo del responsable: no se encola.");
+            }
+
+            return recipients;
+        }
+
         // ── Consultas (repositorio genérico con selector) ───────────────
 
         /// <summary>Personas sin formulario, de cursos activos, con fecha límite entre dueFrom y dueTo.</summary>
@@ -1434,13 +1794,22 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Services
                     a => !a.Course.Removed && a.DueDate >= dueFrom && a.DueDate <= dueTo && a.Users.Any(),
                     selector: q => q.Select(CourseAlertProjections.Assignment))) ?? [];
 
+        /// <summary>Correos de las personas de una asignación (para saber a qué líderes va el reporte).</summary>
+        private async Task<IReadOnlyList<string>> GetMemberEmailsAsync(int assignmentId) =>
+            await _transactionHelper.ExecuteQueryAsync<IReadOnlyList<string>>(async unitOfWork =>
+                await unitOfWork.Repository<CourseAssignmentUser>().GetListAsync(
+                    u => u.AssignmentId == assignmentId && u.User.CorportativeEmail != "",
+                    selector: q => q.Select(u => u.User.CorportativeEmail))) ?? [];
+
         /// <summary>El correo para la cola y su fila de la vista previa.</summary>
         private sealed record PlannedAlert(CourseEmailQueueItem Item, CourseAlertPreviewItemDto Preview);
     }
 }
 ```
 
-> **Rápido:** no consulta Graph ni envía nada. Con miles de personas, son dos consultas, una búsqueda de llaves y un `INSERT`.
+> **Rápido:**
+> - No envía nada ni consulta Graph. El DataLake se lee una vez por hora (está en memoria).
+> - Con miles de personas, son unas pocas consultas, una búsqueda de llaves y un `INSERT`.
 
 ### `WebApp/BackgroundServices/CourseAlertsWorker.cs`
 
@@ -1606,9 +1975,7 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
                 return CourseEmailComposition.Skip(CourseAlertConstants.AlertDisabled);
             }
 
-            var copies = CourseAlertSettingsRules.CopyFor(settings, item.AlertType)
-                ? await _copyResolver.ResolveAsync(settings, person.Email, ct)
-                : [];
+            var copies = await _copyResolver.ResolveAsync(CourseAlertSettingsRules.CopyOf(settings, item.AlertType), person.Email, ct);
 
             var portalUrl = _configuration["Frontend:FrontendApp"]?.TrimEnd('/') ?? string.Empty;
             var tokens = new Dictionary<string, string>
@@ -1644,7 +2011,7 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
 
 ### `Composers/CourseReportEmailComposer.cs` — reporte de resultados
 
-Las cifras se leen **al enviar**: el reporte dice cómo va el grupo en ese momento.
+Las cifras se leen **al enviar**. A un líder (`recipient_role = LEADER`) le llega solo su equipo dentro del grupo.
 
 ```csharp
 using System.Globalization;
@@ -1655,6 +2022,7 @@ using DOCCB.Application.Features.Common.Application.Interfaces;
 using DOCCB.Application.Features.CourseAlerts.Application.Constants;
 using DOCCB.Application.Features.CourseAlerts.Application.Dtos;
 using DOCCB.Application.Features.CourseAlerts.Application.Helpers;
+using DOCCB.Application.Features.CourseAlerts.Application.Interfaces;
 using DOCCB.Application.Features.CourseEmails.Application.Constants;
 using DOCCB.Application.Features.CourseEmails.Application.Interfaces;
 using DOCCB.Application.Features.Courses.Application.Constants;
@@ -1670,6 +2038,7 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
     public class CourseReportEmailComposer(
         ITransactionExecutorHelper transactionHelper,
         ICourseCompletionService completionService,
+        IOrganizationDirectory organization,
         IUserSearchRepository users,
         IConfiguration configuration,
         TimeProvider timeProvider) : ICourseEmailComposer
@@ -1681,9 +2050,13 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
 
         private readonly ITransactionExecutorHelper _transactionHelper = transactionHelper;
         private readonly ICourseCompletionService _completionService = completionService;
+        private readonly IOrganizationDirectory _organization = organization;
         private readonly IUserSearchRepository _users = users;
         private readonly IConfiguration _configuration = configuration;
         private readonly TimeProvider _timeProvider = timeProvider;
+
+        /// <summary>Una persona del grupo, lista para las tablas del correo.</summary>
+        private sealed record ReportPerson(string DisplayName, string Email, string? Management, bool Completed, bool IsOverdue, DateTime? CompletedDate);
 
         public IReadOnlyCollection<string> AlertTypes { get; } = [EmailAlertTypes.CourseResultsReport];
 
@@ -1700,47 +2073,79 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
                 return CourseEmailComposition.Skip(CourseEmailConstants.NoEmail);
             }
 
-            // Cifras y calificaciones: el mismo cálculo de la página de resultados (con el anonimato).
+            // Calificaciones: el mismo cálculo de la página de resultados (con el anonimato).
             // Si no se pueden leer, se lanza: la cola lo reintenta más tarde.
             var progressResult = await _completionService.GetProgressAsync(assignment.CourseId, ct);
             var progress = progressResult.Status == CourseResultStatus.Ok ? progressResult.Response.Response : null;
             var group = progress?.Assignments.FirstOrDefault(a => a.AssignmentId == assignment.AssignmentId);
-            var people = group is null ? null : await GetPeopleAsync(assignment, ct);
-            if (progress is null || group is null || people is null)
+            var assigned = group is null ? null : await GetPeopleAsync(assignment, ct);
+            if (progress is null || group is null || assigned is null)
             {
                 throw new InvalidOperationException(CourseAlertConstants.ProgressUnavailable);
             }
 
+            // Líder y gerencia de cada persona (el DataLake está en memoria: no es una llamada por persona).
+            var organization = await _organization.FindByEmailsAsync(assigned.Select(p => p.Email).ToList(), ct);
+            var people = assigned
+                .Select(p => new ReportPerson(
+                    p.DisplayName,
+                    p.Email,
+                    p.Management ?? organization.GetValueOrDefault(p.Email)?.ManagementName,
+                    p.Status == CompletionConstants.Status.Completed,
+                    p.IsOverdue,
+                    p.CompletedDate))
+                .ToList();
+
             var recipient = item.RecipientEmail;
+            var forLeader = item.RecipientRole == CourseAlertConstants.RoleLeader;
+            if (forLeader)
+            {
+                people = people
+                    .Where(p => string.Equals(organization.GetValueOrDefault(p.Email)?.LeaderEmail, recipient, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (people.Count == 0)
+                {
+                    return CourseEmailComposition.Skip(CourseAlertConstants.LeaderWithoutTeam);
+                }
+            }
+
+            var total = people.Count;
+            var completed = people.Count(p => p.Completed);
+            var percent = total == 0 ? 0 : (int)Math.Round(completed * 100.0 / total);
             var name = (await _users.FindByEmailsAsync([recipient], ct)).FirstOrDefault()?.DisplayName;
             var daysLeft = assignment.DueDate.DayNumber - BusinessDate.Today(_timeProvider).DayNumber;
-            var percent = group.Total == 0 ? 0 : (int)Math.Round(group.Completed * 100.0 / group.Total);
             var portalUrl = _configuration["Frontend:FrontendApp"]?.TrimEnd('/') ?? string.Empty;
+            var groupName = forLeader ? $"{assignment.GroupName} · tu equipo" : assignment.GroupName;
 
             var tokens = new Dictionary<string, string>
             {
                 ["NOMBRE"] = WebUtility.HtmlEncode(name ?? CourseAlertConstants.ReportFallbackName),
                 ["CURSO"] = WebUtility.HtmlEncode(assignment.CourseName),
                 ["MODALIDAD"] = assignment.Modality.ToString(),
-                ["GRUPO"] = WebUtility.HtmlEncode(assignment.GroupName),
+                ["GRUPO"] = WebUtility.HtmlEncode(groupName),
                 ["FECHA_LIMITE"] = assignment.DueDate.ToDateTime(TimeOnly.MinValue).ToString("d 'de' MMMM 'de' yyyy", Spanish),
                 ["ESTADO_PLAZO"] = DueStateText(daysLeft),
                 ["ESTADO_COLOR"] = daysLeft > 0 ? "#B45309" : "#DC2626",
-                ["TOTAL_ASIGNADOS"] = group.Total.ToString(Spanish),
-                ["TOTAL_FINALIZADOS"] = group.Completed.ToString(Spanish),
-                ["TOTAL_PENDIENTES"] = (group.Total - group.Completed).ToString(Spanish),
+                ["TOTAL_ASIGNADOS"] = total.ToString(Spanish),
+                ["TOTAL_FINALIZADOS"] = completed.ToString(Spanish),
+                ["TOTAL_PENDIENTES"] = (total - completed).ToString(Spanish),
                 ["PORCENTAJE"] = percent.ToString(Spanish),
                 ["FILAS_PENDIENTES"] = Rows(
-                    people.Where(p => p.Status != CompletionConstants.Status.Completed).ToList(),
+                    people.Where(p => !p.Completed).ToList(),
                     p => p.IsOverdue ? ("Vencido", "#DC2626") : ("Pendiente", "#B45309")),
                 ["FILAS_FINALIZADOS"] = Rows(
-                    people.Where(p => p.Status == CompletionConstants.Status.Completed).ToList(),
+                    people.Where(p => p.Completed).ToList(),
                     p => (p.CompletedDate is { } date ? BusinessDate.FromUtc(date).ToString("d MMM yyyy", Spanish) : "—", "#047857")),
+                // Las calificaciones son del grupo completo: por equipo romperían el anonimato.
                 ["CALIFICACIONES"] = RatingsText(group.Ratings, progress.Ratings),
                 ["CTA_URL"] = $"{portalUrl}/cursos/{assignment.CourseId}/resultados?grupo={assignment.AssignmentId}",
             };
 
-            var subject = $"Avance del curso {assignment.CourseName} · {assignment.GroupName}";
+            var subject = forLeader
+                ? $"Avance de tu equipo en el curso {assignment.CourseName}"
+                : $"Avance del curso {assignment.CourseName} · {assignment.GroupName}";
+
             return CourseEmailComposition.Send(
                 new ComposedEmail(recipient, [], subject, CourseAlertConstants.ReportTemplate, tokens, assignment.AssignmentId));
         }
@@ -1783,7 +2188,7 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
         // ── Textos ──────────────────────────────────────────────────────
 
         /// <summary>Las filas con el formato que documenta la plantilla. Lista vacía: una fila "Nadie en esta lista.".</summary>
-        private static string Rows(IReadOnlyList<AssignedUserProgressDto> people, Func<AssignedUserProgressDto, (string Text, string Color)> third)
+        private static string Rows(IReadOnlyList<ReportPerson> people, Func<ReportPerson, (string Text, string Color)> third)
         {
             if (people.Count == 0)
             {
@@ -1821,7 +2226,8 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
             var scope = groupRatings is null ? "del curso (todos los grupos)" : "del grupo";
 
             return ratings.Visible
-                ? $"{scope}: satisfacción {Average(ratings.SatisfactionAverage)} / 5 · utilidad {Average(ratings.UsefulnessAverage)} / 5 ({ratings.Responses} respuestas)."
+                ? $"{scope}: calidad {Average(ratings.SatisfactionAverage)} / 5 · utilidad {Average(ratings.UsefulnessAverage)} / 5 · " +
+                  $"conocimiento {Average(ratings.KnowledgeBeforeAverage)} → {Average(ratings.KnowledgeAfterAverage)} / 10 ({ratings.Responses} respuestas)."
                 : $"aún no hay respuestas suficientes para mostrarlas sin romper el anonimato ({ratings.Responses} de {ratings.MinimumResponses}).";
         }
 
@@ -1833,7 +2239,9 @@ namespace DOCCB.Application.Features.CourseAlerts.Application.Composers
 }
 ```
 
-> **La gerencia en las listas:** la de quien ya finalizó sale del formulario (`ManagementName`). La de quien está pendiente no se conoce todavía: aparece "—".
+> **La gerencia en las listas:** la de quien ya finalizó sale del formulario (`ManagementName`). La de quien está pendiente sale del DataLake. Si tampoco está ahí, aparece "—".
+>
+> **Las calificaciones** usan los campos del formulario de 5 preguntas ([cursos-formulario-finalizacion-api.md](cursos-formulario-finalizacion-api.md)). Si esa guía aún no está aplicada, quita del texto la parte de "conocimiento".
 
 ### `Composers/CourseAssignedEmailComposer.cs` ✏️ — la bienvenida respeta la configuración
 
@@ -1853,6 +2261,7 @@ public class CourseAssignedEmailComposer(
 
 ```csharp
 using DOCCB.Application.Features.CourseAlerts.Application.Constants;
+using DOCCB.Application.Features.CourseAlerts.Application.Helpers;
 using DOCCB.Application.Features.CourseAlerts.Application.Interfaces;
 ```
 
@@ -1866,9 +2275,8 @@ if (!settings.WelcomeEnabled)
     return CourseEmailComposition.Skip(CourseAlertConstants.WelcomeDisabled);
 }
 
-var copies = settings.WelcomeCopy
-    ? await _copyResolver.ResolveAsync(settings, person.Email, ct)
-    : [];
+var copies = await _copyResolver.ResolveAsync(
+    CourseAlertSettingsRules.CopyOf(settings, EmailAlertTypes.CourseAssigned), person.Email, ct);
 ```
 
 **3. Al final**, pasa `copies` en lugar de la lista vacía:
@@ -2142,6 +2550,8 @@ namespace DOCCB.WebApp.Controllers
 `ApplicationServiceRegistration.cs`, junto a los de la cola:
 
 ```csharp
+services.AddMemoryCache(); // si ya está registrado, no pasa nada
+services.AddScoped<IOrganizationDirectory, DataLakeOrganizationDirectory>();
 services.AddScoped<ICourseAlertSettingsService, CourseAlertSettingsService>();
 services.AddScoped<ICourseAlertCopyResolver, CourseAlertCopyResolver>();
 services.AddScoped<ICourseAlertJobService, CourseAlertJobService>();
@@ -2149,6 +2559,23 @@ services.AddScoped<ICourseAlertJobService, CourseAlertJobService>();
 services.AddScoped<ICourseEmailComposer, CourseReminderEmailComposer>();
 services.AddScoped<ICourseEmailComposer, CourseReportEmailComposer>();
 ```
+
+> **Antes de integrar el DataLake en la rama de cursos:** registra en su lugar una versión vacía. El líder sale de Graph, el reporte a líderes no se encola y la gerencia sigue "No disponible":
+>
+> ```csharp
+> /// <summary>Temporal: mientras la integración del DataLake no esté en esta rama.</summary>
+> public class UnavailableOrganizationDirectory : IOrganizationDirectory
+> {
+>     public Task<IReadOnlyDictionary<string, OrganizationPerson>> FindByEmailsAsync(IReadOnlyCollection<string> emails, CancellationToken ct) =>
+>         Task.FromResult<IReadOnlyDictionary<string, OrganizationPerson>>(new Dictionary<string, OrganizationPerson>());
+> }
+> ```
+>
+> ```csharp
+> services.AddScoped<IOrganizationDirectory, UnavailableOrganizationDirectory>();
+> ```
+>
+> Al integrar el DataLake, se cambia esa línea por la de `DataLakeOrganizationDirectory` y se borra la clase temporal.
 
 `Program.cs`, junto a `CourseEmailWorker`:
 
@@ -2167,6 +2594,8 @@ builder.Services.AddHostedService<CourseAlertsWorker>();
 }
 ```
 
+> **El DataLake** usa su propia sección `DataLakeApi` (con `Enabled`), que ya trae la integración. Sus secretos van en User Secrets o en la configuración del servidor, no en `appsettings.json`.
+>
 > **En desarrollo:** `"JobEnabled": false` en `appsettings.Development.json`, para que tu máquina no encole sola. Usa la vista previa y "Ejecutar ahora".
 >
 > **Varias instancias:** las llaves impiden duplicados aunque dos instancias encolen a la vez, así que `JobEnabled` puede quedar activo en todas.
@@ -2189,71 +2618,95 @@ Base `/api/course-alerts`. Respuestas `{ response, hasError, errors }`. Errores 
 
 ```json
 {
-  "welcomeEnabled": true,  "welcomeCopy": false,
-  "reminderEnabled": true, "reminderDaysBefore": 7, "reminderCopy": false,
-  "urgentEnabled": true,   "urgentDaysBefore": 2,   "urgentCopy": true,
-  "copyLeader": true, "copyManagement": false, "copyEmails": ["formacion@empresa.co"],
-  "reportEnabled": true, "reportDayOffsets": [-3, 0, 3], "reportEmails": ["gerencia.gh@empresa.co"]
+  "welcome":  { "enabled": true,
+                "copy": { "leader": false, "management": false, "direction": false, "emails": [] } },
+  "reminder": { "enabled": true, "daysBefore": 7,
+                "copy": { "leader": false, "management": false, "direction": false, "emails": ["formacion@empresa.co"] } },
+  "urgent":   { "enabled": true, "daysBefore": 2,
+                "copy": { "leader": true, "management": false, "direction": false, "emails": [] } },
+  "report":   { "enabled": true, "dayOffsets": [-3, 0, 3],
+                "to": { "leader": true, "management": false, "direction": false, "emails": ["gestion.humana@empresa.co"] } }
 }
 ```
 
-`reports` cuenta correos: un reporte a 3 destinatarios suma 3.
+`reports` cuenta correos: un reporte a 3 líderes y 1 correo suma 4.
+
+**Buscar personas para las copias:** el frontend usa `GET /api/users/search?q=…&top=10`, que ya existe.
 
 ---
 
 ## 14. Pruebas
 
 **Configuración**
-- **`GET /general` recién instalado:** los valores del script (7 y 2 días, urgente con copia al líder, sin reporte).
+- **`GET /general` recién instalado:** 7 y 2 días, la urgente con copia al líder y sin reporte.
+- **Números libres:**
+  - Recordatorio en 45 y urgente en 10 se guardan.
+  - Urgente en 400 → "Los días de anticipación deben estar entre 0 y 365.".
+  - Un momento de reporte en `-120` se guarda.
+  - 21 momentos → el mensaje del máximo de 20.
 - **Errores que no se guardan** (`hasError`):
   - Urgente 7 y normal 3 → "La alerta urgente debe enviarse más cerca…".
-  - Copia activa sin líder, gerencia ni correos → "Activaste copias, pero no hay a quién…".
-  - Reporte activo sin momentos o sin correos.
+  - Reporte activo sin momentos, o sin líder, gerencia, dirección ni correos.
   - Un correo inválido → "Estos correos no son válidos: …".
 - **Configuración propia de un curso:**
   - `PUT /courses/12` la crea. `GET /courses/12` responde `usesGeneral: false`.
-  - `DELETE` vuelve a la general (`usesGeneral: true`).
-  - En la base queda una sola fila con `course_id NULL`.
+  - `DELETE` vuelve a la general.
+
+**Copias por alerta**
+- **Recordatorio con un correo fijo y urgente con líder:** el recordatorio lleva solo ese correo en CC y la urgente solo el líder.
+- **Líder:**
+  - Con el DataLake activo, el líder sale de él.
+  - Con `DataLakeApi:Enabled: false`, sale de Graph.
+  - Sin ninguno de los dos, el correo sale igual, sin la copia.
+- **Gerencia o dirección marcadas:** el correo sale sin esa copia y el log dice que falta el correo del responsable.
+
+**El DataLake**
+- **La primera consulta lo carga** (log: "Maestro de empleados del DataLake en memoria: N personas."). Las siguientes, durante una hora, no lo llaman.
+- **Si el DataLake no responde:**
+  - Un aviso en el log.
+  - No vuelve a intentar durante 5 minutos.
+  - Las alertas salen igual (con el líder de Graph).
+- **Formulario de finalización:** la gerencia ya no sale "No disponible" para quien está en el maestro.
 
 **Encolar** (con `JobEnabled: false`, usando la vista previa y "Ejecutar ahora")
 - **Fechas límite de prueba:** una asignación a 7 días, otra a 2 y otra a 0.
-  - `GET /preview` muestra el normal, el urgente y el urgente; en copias, "Líder" y los correos fijos.
-  - `POST /run` responde enseguida con los conteos. En `course_email_queue` quedan las filas con su `dedupe_key`.
+  - `GET /preview` muestra el normal, el urgente y el urgente, cada uno con sus copias ("Líder", correos).
+  - `POST /run` responde enseguida con los conteos.
   - Otro `POST /run` encola **0**.
-- **El envío:**
-  - `CourseEmailWorker` los envía con `TemplateCourseReminderUser.html`: el normal en ámbar y los urgentes en rojo, con el mensaje prioritario y el líder en CC.
-  - "Envío de correos" del curso muestra el avance.
-- **Formulario diligenciado después de encolar y antes de enviar:** el correo queda `SKIPPED` con "La persona ya diligenció…".
-- **El formulario detiene los recordatorios:** quien lo diligenció ya no se encola.
+- **Formulario diligenciado después de encolar y antes de enviar:** el correo queda `SKIPPED`.
 - **Asignada dentro de la ventana:** si a la persona la asignaron hace 2 días y vence en 5 (normal = 7), no recibe el normal. Sí recibe el urgente al llegar a 2.
-- **Cambio de fecha límite:** después de un urgente, mover la fecha 10 días hacia adelante hace que la persona vuelva a recibir el normal y el urgente con la fecha nueva.
-- **Configuración propia del curso:** con normal = 10, la persona de ese curso se encola 10 días antes. Los demás cursos siguen con la general.
+- **Cambio de fecha límite:** la persona vuelve a recibir sus alertas con la fecha nueva.
 - **Reporte:**
-  - Con momentos `[-3, 0, 3]`, dos correos y una asignación que vence hoy: se encolan 2 (momento `0`). Cada destinatario recibe el suyo, saludando por su nombre (o "Hola equipo").
-  - Trae las cifras del grupo **en el momento del envío**, la tabla de pendientes ("Vencido" o "Pendiente"), la de finalizados (con la gerencia y la fecha) y las calificaciones solo si hay respuestas suficientes.
+  - Con "Líderes" y un correo, una asignación de 30 personas de 3 líderes que vence hoy: se encolan 4.
+  - Cada líder recibe "Avance de tu equipo…" con **solo sus personas** y los totales de su equipo. El correo fijo recibe el grupo completo.
+  - Las calificaciones son siempre las del grupo y solo si hay respuestas suficientes.
+  - **Un correo que es líder y también está en "otros correos":** recibe los dos (el de su equipo y el completo).
   - **Servidor apagado:** si un momento cayó ayer, se encola hoy (margen de 2 días).
-  - **Un correo nuevo en la lista:** se encola en la siguiente vuelta, mientras el momento siga dentro del margen.
 - **El proceso programado:**
   - Con `JobEnabled: true`, encola a las 7:00 y vuelve cada hora (en la segunda vuelta, 0 nuevos).
   - A las 22:00 no encola nada.
-  - Reiniciar la API a las 10:00 pone al día lo de hoy.
-- **"Registro de correos":** aparecen `COURSE_DUE_REMINDER`, `COURSE_DUE_URGENT` y `COURSE_RESULTS_REPORT` con la persona y las copias, y en el filtro de tipos.
 - **Bienvenida:**
-  - Con `welcomeEnabled: false` en un curso, al asignarle un grupo los correos quedan `SKIPPED` ("La bienvenida está apagada…").
-  - Con `welcomeCopy: true`, sale con el líder en CC.
-- **Gerencia:** con `copyManagement: true` el envío sale igual (sin esa copia) y el log dice que falta la fuente.
+  - Con `welcome.enabled: false` en un curso, al asignarle un grupo los correos quedan `SKIPPED`.
+  - Con `welcome.copy.leader: true`, sale con el líder en CC.
 
 ---
 
 ## ✅ Checklist
 
-- [ ] Guía de la cola implementada (`course_email_queue`, `CourseEmailWorker`, `cc`).
-- [ ] `CourseAlerts.sql` (la tabla y la general por defecto).
+- [ ] Guía de la cola implementada (`course_email_queue` con `recipient_role`, `CourseEmailWorker`, `cc`).
+- [ ] `CourseAlerts.sql` (la tabla con copias por alerta y la general por defecto).
 - [ ] `CourseAlertSettings`, su configuración y el `DbSet`.
 - [ ] `EmailAlertTypes`: `CourseDueUrgent` y `CourseResultsReport`, también en `All`.
 - [ ] `BusinessDate.FromUtc`.
-- [ ] `CourseAlertConstants`, DTOs, candidatos, `CourseAlertProjections`, `CourseAlertSettingsRules` y `CourseAlertSchedule`.
+- [ ] Constantes, DTOs, candidatos, proyecciones, reglas y calendario:
+  - `CourseAlertConstants` y los DTOs anidados.
+  - `CourseAlertCandidates` y `CourseAlertProjections`.
+  - `CourseAlertSettingsRules` con `CourseAlertRecipients`.
+  - `CourseAlertSchedule`.
 - [ ] `CourseAlertSettingsService`.
+- [ ] El DataLake:
+  - `IOrganizationDirectory` + `DataLakeOrganizationDirectory` (o la versión vacía mientras se integra).
+  - `ManagementDirectory`.
 - [ ] `GetManagerAsync` en `IGraphDirectoryService` / `GraphDirectoryService`.
 - [ ] `CourseAlertCopyResolver`.
 - [ ] Los cuatro ajustes de `TemplateCoursePendingReport.html`.
@@ -2262,6 +2715,7 @@ Base `/api/course-alerts`. Respuestas `{ response, hasError, errors }`. Errores 
   - `GetExistingKeysAsync` y `EnqueueAsync` en el repositorio.
 - [ ] `CourseAlertJobService` y `CourseAlertsWorker`.
 - [ ] Composers:
-  - `CourseReminderEmailComposer` y `CourseReportEmailComposer`.
-  - La bienvenida respeta la configuración.
-- [ ] `ApiResponseConstants`, `CourseAlertsController`, registros, `appsettings` y `AddHostedService`.
+  - El recordatorio.
+  - El reporte, con el equipo de cada líder.
+  - La bienvenida con sus copias.
+- [ ] `ApiResponseConstants`, `CourseAlertsController`, registros (`AddMemoryCache`), `appsettings` y `AddHostedService`.

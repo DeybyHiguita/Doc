@@ -7,10 +7,12 @@ Las dos pantallas de la configuración de alertas:
 | **Configuración general** | `/cursos/alertas` | La que aplica a todos los cursos. Incluye la vista previa "¿qué se enviaría hoy?" y "Enviar ahora". |
 | **Configuración de un curso** | `/cursos/:id/alertas` | Dice si el curso usa la general. "Personalizar para este curso" crea una propia, que manda; "Volver a la general" la quita. |
 
-Las dos usan **el mismo formulario** (`app-alert-settings-form`) con los mismos campos:
-- **A quién se copia:** líder, gerencia y correos fijos.
-- **Las tres alertas a la persona:** bienvenida, recordatorio y urgente, cada una con su opción de copia.
-- **El reporte de resultados:** momentos y destinatarios.
+Las dos usan **el mismo formulario** (`app-alert-settings-form`):
+- **Las tres alertas a la persona** (bienvenida, recordatorio y urgente), cada una con **sus propias copias**:
+  - Casillas para su líder, su gerencia y su dirección.
+  - Un buscador de personas para agregar más correos.
+- **Los días antes** se escriben como un número (de 0 a 365), sin lista de opciones.
+- **El reporte de resultados:** momentos libres (por ejemplo, "10 días antes" o "45 días después") y quién lo recibe (líderes, gerencia, dirección u otros correos).
 - **Una línea de tiempo** con cómo quedan los envíos respecto a la fecha límite.
 
 **La API** está en [cursos-alertas-api.md](cursos-alertas-api.md). **Requiere** la cola de correos en Angular ([cursos-cola-correos-angular.md](cursos-cola-correos-angular.md)): ahí se ve el avance de lo que se envía. **Base:** el código real de `.claude/Cursos y recordatorios`:
@@ -18,6 +20,7 @@ Las dos usan **el mismo formulario** (`app-alert-settings-form`) con los mismos 
 - `unwrap` de `ApiResponse` y `course-feedback` para los avisos.
 - `unsavedChangesGuard`.
 - `extractEmails`.
+- **El buscador de usuarios que ya existe:** `UsersDirectoryRepository` / `UsersDirectoryService` → `GET /api/users/search`.
 - Los tokens `--cu-*`, solo con amarillos y grises.
 
 ---
@@ -27,16 +30,17 @@ Las dos usan **el mismo formulario** (`app-alert-settings-form`) con los mismos 
 ```text
 src/app/features/course-alerts/
 ├── domain/
-│   ├── course-alerts.model.ts               modelos, opciones de días/momentos y textos
+│   ├── course-alerts.model.ts               modelos, límites y textos
 │   └── course-alerts.repository.ts          contrato
 ├── infraestructure/
 │   ├── course-alerts.service.ts             HTTP (api/course-alerts)
-│   └── course-alerts.providers.ts
+│   └── course-alerts.providers.ts           + el buscador de usuarios de cursos
 ├── application/
 │   └── course-alert-settings.facade.ts      estado de cada página
 └── presentation/
     ├── _course-alerts-page.scss             estilos comunes de las dos páginas
-    ├── email-list-input/                    correos: pegar, chips, quitar
+    ├── email-picker/                        buscar personas o pegar correos (chips)
+    ├── alert-recipients/                    líder, gerencia, dirección y correos de una alerta
     ├── alert-settings-form/                 ⭐ el formulario compartido
     ├── course-alerts-general-page/          /cursos/alertas
     └── course-alerts-course-page/           /cursos/:id/alertas
@@ -57,26 +61,41 @@ src/app/features/course-alerts/
 ```ts
 export type CourseAlertType = 'COURSE_DUE_REMINDER' | 'COURSE_DUE_URGENT' | 'COURSE_RESULTS_REPORT';
 
+/** A quién se copia una alerta (o a quién va el reporte). */
+export interface AlertRecipients {
+  /** El líder de cada persona (en el reporte: cada líder recibe su equipo). */
+  leader: boolean;
+  /** Pendiente: el DataLake aún no trae el correo del gerente. */
+  management: boolean;
+  /** Pendiente: el DataLake aún no trae el correo del director. */
+  direction: boolean;
+  emails: string[];
+}
+
+export interface WelcomeAlert {
+  enabled: boolean;
+  copy: AlertRecipients;
+}
+
+export interface ReminderAlert {
+  enabled: boolean;
+  /** Días antes de la fecha límite. 0 = el mismo día. */
+  daysBefore: number;
+  copy: AlertRecipients;
+}
+
+export interface ReportAlert {
+  enabled: boolean;
+  /** -3 = tres días antes, 0 = el día, 3 = tres días después. */
+  dayOffsets: number[];
+  to: AlertRecipients;
+}
+
 export interface CourseAlertSettings {
-  welcomeEnabled: boolean;
-  welcomeCopy: boolean;
-
-  reminderEnabled: boolean;
-  reminderDaysBefore: number;
-  reminderCopy: boolean;
-
-  urgentEnabled: boolean;
-  urgentDaysBefore: number;
-  urgentCopy: boolean;
-
-  copyLeader: boolean;
-  copyManagement: boolean;
-  copyEmails: string[];
-
-  reportEnabled: boolean;
-  /** Días respecto a la fecha límite: -3 = tres días antes, 0 = el día, 3 = tres días después. */
-  reportDayOffsets: number[];
-  reportEmails: string[];
+  welcome: WelcomeAlert;
+  reminder: ReminderAlert;
+  urgent: ReminderAlert;
+  report: ReportAlert;
 
   /** Solo al leer. */
   updatedDate?: Date | null;
@@ -111,11 +130,7 @@ export interface CourseAlertRunResult {
 }
 
 /** Los mismos límites de la API. */
-export const ALERT_LIMITS = { maxEmails: 30, maxReportMoments: 5 } as const;
-
-export const REMINDER_DAY_OPTIONS = [1, 2, 3, 5, 7, 10, 14, 15, 21, 30] as const;
-export const URGENT_DAY_OPTIONS = [0, 1, 2, 3, 4, 5, 7] as const;
-export const REPORT_MOMENTS = [-7, -3, -1, 0, 1, 3, 7] as const;
+export const ALERT_LIMITS = { maxDays: 365, maxOffset: 365, maxMoments: 20, maxEmails: 50 } as const;
 
 export const ALERT_TYPE_LABEL: Readonly<Record<CourseAlertType, string>> = {
   COURSE_DUE_REMINDER: 'Recordatorio',
@@ -136,24 +151,28 @@ export function momentLabel(offset: number): string {
   return offset < 0 ? `${days(-offset)} antes` : `${days(offset)} después`;
 }
 
+/** "su líder, 2 correos" · "nadie". */
+export function describeRecipients(r: AlertRecipients, report = false): string {
+  const parts = [
+    r.leader ? (report ? 'los líderes (su equipo)' : 'su líder') : null,
+    r.management ? 'gerencia' : null,
+    r.direction ? 'dirección' : null,
+    r.emails.length ? `${r.emails.length} ${r.emails.length === 1 ? 'correo' : 'correos'}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'nadie';
+}
+
 /** Resumen de solo lectura (página de un curso que usa la general). */
 export function describeSettings(s: CourseAlertSettings): { label: string; value: string }[] {
-  const copy = (on: boolean) => (on ? ' · con copia' : '');
-  const copyTargets = [
-    s.copyLeader ? 'su líder' : null,
-    s.copyManagement ? 'su gerencia' : null,
-    s.copyEmails.length ? `${s.copyEmails.length} ${s.copyEmails.length === 1 ? 'correo' : 'correos'}` : null,
-  ].filter(Boolean).join(', ');
-
+  const copy = (r: AlertRecipients) => ` · copia a ${describeRecipients(r)}`;
   return [
-    { label: 'Bienvenida', value: s.welcomeEnabled ? `Al asignar el curso${copy(s.welcomeCopy)}` : 'Apagada' },
-    { label: 'Recordatorio', value: s.reminderEnabled ? `${daysBeforeLabel(s.reminderDaysBefore)}${copy(s.reminderCopy)}` : 'Apagado' },
-    { label: 'Urgente', value: s.urgentEnabled ? `${daysBeforeLabel(s.urgentDaysBefore)}${copy(s.urgentCopy)}` : 'Apagada' },
-    { label: 'Copias a', value: copyTargets || 'Nadie' },
+    { label: 'Bienvenida', value: s.welcome.enabled ? `Al asignar el curso${copy(s.welcome.copy)}` : 'Apagada' },
+    { label: 'Recordatorio', value: s.reminder.enabled ? `${daysBeforeLabel(s.reminder.daysBefore)}${copy(s.reminder.copy)}` : 'Apagado' },
+    { label: 'Urgente', value: s.urgent.enabled ? `${daysBeforeLabel(s.urgent.daysBefore)}${copy(s.urgent.copy)}` : 'Apagada' },
     {
       label: 'Reporte de resultados',
-      value: s.reportEnabled
-        ? `${s.reportDayOffsets.map(momentLabel).join(', ')} · ${s.reportEmails.length} ${s.reportEmails.length === 1 ? 'destinatario' : 'destinatarios'}`
+      value: s.report.enabled
+        ? `${s.report.dayOffsets.map(momentLabel).join(', ')} · para ${describeRecipients(s.report.to, true)}`
         : 'Apagado',
     },
   ];
@@ -175,9 +194,9 @@ export abstract class CourseAlertsRepository {
   /** Quita la propia: el curso vuelve a la general. */
   abstract resetCourse(courseId: number): Observable<CourseAlertCourseSettings>;
 
-  /** Qué se enviaría hoy, sin enviar. */
+  /** Qué se encolaría ahora, sin encolar. */
   abstract preview(): Observable<CourseAlertRunResult>;
-  /** Envía ya lo del día (no repite lo que ya salió). */
+  /** Encola ya lo que toca hoy (no repite lo que ya está en cola). */
   abstract runNow(): Observable<CourseAlertRunResult>;
 }
 ```
@@ -257,13 +276,18 @@ function toRequest(s: CourseAlertSettings) {
 
 ### `infraestructure/course-alerts.providers.ts`
 
+El buscador de personas reutiliza el de cursos (`GET /api/users/search`).
+
 ```ts
 import { Provider } from '@angular/core';
+import { UsersDirectoryRepository } from '@features/courses/domain/users-directory.repository';
+import { UsersDirectoryService } from '@features/courses/infraestructure/users-directory.service';
 import { CourseAlertsRepository } from '../domain/course-alerts.repository';
 import { CourseAlertsService } from './course-alerts.service';
 
 export const COURSE_ALERTS_INFRASTRUCTURE_PROVIDERS: Provider[] = [
   { provide: CourseAlertsRepository, useExisting: CourseAlertsService },
+  { provide: UsersDirectoryRepository, useExisting: UsersDirectoryService },
 ];
 ```
 
@@ -356,7 +380,7 @@ export class CourseAlertSettingsFacade {
     this._previewLoading.set(true);
     try {
       const result = await firstValueFrom(this.repository.runNow());
-      this._preview.set(null); // lo enviado ya no está pendiente
+      this._preview.set(null); // lo encolado ya no está pendiente
       return result;
     } catch (e) {
       notifyError(toErrorMessage(e, 'No se pudieron poner en cola las alertas.'));
@@ -399,81 +423,221 @@ export class CourseAlertSettingsFacade {
 
 ---
 
-## 5. Paso 4 — `email-list-input` (pegar correos, chips)
+## 5. Paso 4 — Destinatarios: `email-picker` y `alert-recipients`
 
-`presentation/email-list-input/`
+### `presentation/email-picker/email-picker.component.ts`
 
-### `email-list-input.component.ts`
+Un campo de correos (`ControlValueAccessor` de `string[]`):
+- Busca personas por nombre o correo con el buscador de usuarios que ya existe.
+- Si lo escrito es un correo que no está en la base (por ejemplo, `formacion@empresa.co`), ofrece agregarlo tal cual.
+- Pegar una lista (de Outlook, Excel o separada por comas) agrega todos los correos de una vez.
 
 ```ts
-import { ChangeDetectionStrategy, Component, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, computed, forwardRef, inject, input, signal, viewChild } from '@angular/core';
+import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
+import { toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { catchError, debounceTime, distinctUntilChanged, map, of, switchMap, tap } from 'rxjs';
 import { extractEmails } from '@shared/utils/email-list';
+import { AssignedUser } from '@features/courses/domain/course.model';
+import { UsersDirectoryRepository } from '@features/courses/domain/users-directory.repository';
 
-/** Lista de correos: se pegan uno o varios (separados por coma, punto y coma o líneas) y se ven como chips. */
+const MIN_TERM = 2;
+const SINGLE_EMAIL = /^[a-z0-9._%+'-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/i;
+
 @Component({
-  selector: 'app-email-list-input',
-  templateUrl: './email-list-input.component.html',
-  styleUrl: './email-list-input.component.scss',
+  selector: 'app-email-picker',
+  templateUrl: './email-picker.component.html',
+  styleUrl: './email-picker.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  providers: [{ provide: NG_VALUE_ACCESSOR, useExisting: forwardRef(() => EmailPickerComponent), multi: true }],
 })
-export class EmailListInputComponent {
+export class EmailPickerComponent implements ControlValueAccessor {
+  private readonly directory = inject(UsersDirectoryRepository);
+  private readonly searchInput = viewChild.required<ElementRef<HTMLInputElement>>('search');
+
   readonly inputId = input.required<string>();
-  readonly label = input.required<string>();
-  readonly hint = input('');
-  readonly emails = input<readonly string[]>([]);
-  readonly max = input(30);
-  readonly invalid = input(false);
+  readonly max = input(50);
+  readonly placeholder = input('Busca por nombre o correo, o pega una lista');
 
-  readonly emailsChange = output<string[]>();
-
-  readonly draft = signal('');
+  readonly emails = signal<readonly string[]>([]);
+  readonly term = signal('');
+  readonly focused = signal(false);
+  readonly searching = signal(false);
+  readonly failed = signal(false);
+  readonly disabled = signal(false);
+  readonly activeIndex = signal(0);
   readonly message = signal<string | null>(null);
 
-  add(): void {
-    const { emails: found } = extractEmails(this.draft());
-    if (!found.length) {
-      this.message.set('No encontramos correos en el texto.');
-      return;
-    }
+  readonly listId = computed(() => `${this.inputId()}-list`);
 
-    const merged = [...new Set([...this.emails(), ...found])];
+  private readonly results = toSignal(
+    toObservable(this.term).pipe(
+      map((term) => term.trim()),
+      debounceTime(300),
+      distinctUntilChanged(),
+      switchMap((term) =>
+        term.length < MIN_TERM
+          ? of<AssignedUser[]>([])
+          : this.directory.search(term, 8).pipe(
+              catchError(() => {
+                this.failed.set(true);
+                return of<AssignedUser[]>([]);
+              }),
+            ),
+      ),
+      tap(() => {
+        this.searching.set(false);
+        this.activeIndex.set(0);
+      }),
+    ),
+    { initialValue: [] as AssignedUser[] },
+  );
+
+  /** Personas con correo que aún no están en la lista. */
+  readonly options = computed(() => {
+    const chosen = new Set(this.emails());
+    return this.results().filter((user) => !!user.email && !chosen.has(user.email.toLowerCase()));
+  });
+
+  /** Lo escrito, si es un correo que no salió en la búsqueda: se ofrece agregarlo tal cual. */
+  readonly rawEmail = computed(() => {
+    const term = this.term().trim().toLowerCase();
+    if (!SINGLE_EMAIL.test(term) || this.emails().includes(term)) return null;
+    return this.options().some((user) => user.email?.toLowerCase() === term) ? null : term;
+  });
+
+  readonly panelOpen = computed(() => this.focused() && this.term().trim().length >= MIN_TERM);
+  readonly optionCount = computed(() => this.options().length + (this.rawEmail() ? 1 : 0));
+  readonly activeOptionId = computed(() =>
+    this.panelOpen() && this.optionCount() ? `${this.listId()}-${this.activeIndex()}` : null,
+  );
+
+  private onChange: (value: string[]) => void = () => {};
+  private onTouched: () => void = () => {};
+
+  // ── ControlValueAccessor ──────────────────────────────────────────
+  writeValue(value: string[] | null): void {
+    this.emails.set(value ?? []);
+  }
+
+  registerOnChange(fn: (value: string[]) => void): void {
+    this.onChange = fn;
+  }
+
+  registerOnTouched(fn: () => void): void {
+    this.onTouched = fn;
+  }
+
+  setDisabledState(isDisabled: boolean): void {
+    this.disabled.set(isDisabled);
+  }
+
+  // ── Interacción ───────────────────────────────────────────────────
+  onInput(value: string): void {
+    this.term.set(value);
+    this.failed.set(false);
+    this.message.set(null);
+    this.searching.set(value.trim().length >= MIN_TERM);
+  }
+
+  /** Pegar varios correos los agrega todos; pegar uno solo se deja en el buscador. */
+  onPaste(event: ClipboardEvent): void {
+    const text = event.clipboardData?.getData('text') ?? '';
+    const { emails } = extractEmails(text);
+    if (emails.length < 2) return;
+
+    event.preventDefault();
+    this.addMany(emails);
+  }
+
+  onKeydown(event: KeyboardEvent): void {
+    const count = this.optionCount();
+
+    switch (event.key) {
+      case 'ArrowDown':
+        if (!count) return;
+        event.preventDefault();
+        this.activeIndex.update((i) => (i + 1) % count);
+        break;
+      case 'ArrowUp':
+        if (!count) return;
+        event.preventDefault();
+        this.activeIndex.update((i) => (i - 1 + count) % count);
+        break;
+      case 'Enter':
+        event.preventDefault(); // Enter nunca envía el formulario
+        this.pickActive();
+        break;
+      case 'Escape':
+        if (this.term()) {
+          event.stopPropagation();
+          this.term.set('');
+        }
+        break;
+      case 'Backspace':
+        if (!this.term() && this.emails().length) this.remove(this.emails()[this.emails().length - 1]);
+        break;
+    }
+  }
+
+  pickUser(user: AssignedUser): void {
+    if (user.email) this.addMany([user.email]);
+  }
+
+  pickRaw(): void {
+    const raw = this.rawEmail();
+    if (raw) this.addMany([raw]);
+  }
+
+  remove(email: string): void {
+    this.commit(this.emails().filter((item) => item !== email));
+  }
+
+  onBlur(): void {
+    this.focused.set(false);
+    this.onTouched();
+  }
+
+  // ── Privados ──────────────────────────────────────────────────────
+  private pickActive(): void {
+    if (!this.panelOpen()) return;
+    const options = this.options();
+    const index = this.activeIndex();
+    if (index < options.length) this.pickUser(options[index]);
+    else this.pickRaw();
+  }
+
+  private addMany(found: readonly string[]): void {
+    const merged = [...new Set([...this.emails(), ...found.map((email) => email.trim().toLowerCase())])];
     if (merged.length > this.max()) {
       this.message.set(`Puedes agregar hasta ${this.max()} correos.`);
       return;
     }
 
-    this.emailsChange.emit(merged);
-    this.draft.set('');
-    this.message.set(null);
+    this.commit(merged);
+    this.term.set('');
+    this.searching.set(false);
+    this.searchInput().nativeElement.focus();
   }
 
-  remove(email: string): void {
-    this.emailsChange.emit(this.emails().filter(item => item !== email));
-  }
-
-  /** Enter agrega; Shift+Enter hace un salto de línea. */
-  onKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      this.add();
-    }
+  private commit(next: readonly string[]): void {
+    this.emails.set(next);
+    this.onChange([...next]);
+    this.onTouched();
   }
 }
 ```
 
-### `email-list-input.component.html`
+### `email-picker.component.html`
 
 ```html
-<div class="eli">
-  <label class="form-label fw-semibold" [for]="inputId()">{{ label() }}</label>
-  @if (hint()) { <div class="form-text mt-0 mb-2">{{ hint() }}</div> }
-
+<div class="ep" [class.is-disabled]="disabled()">
   @if (emails().length) {
-    <ul class="eli__chips" [attr.aria-label]="label()">
+    <ul class="ep__chips" aria-label="Correos agregados">
       @for (email of emails(); track email) {
-        <li class="eli__chip">
+        <li class="ep__chip">
           {{ email }}
-          <button type="button" class="eli__remove" [attr.aria-label]="'Quitar ' + email" (click)="remove(email)">
+          <button type="button" class="ep__remove" [attr.aria-label]="'Quitar ' + email" [disabled]="disabled()" (click)="remove(email)">
             <i class="fa-solid fa-xmark" aria-hidden="true"></i>
           </button>
         </li>
@@ -481,23 +645,88 @@ export class EmailListInputComponent {
     </ul>
   }
 
-  <div class="eli__add">
-    <textarea class="form-control" rows="1" [id]="inputId()" [class.is-invalid]="invalid()"
-      placeholder="persona@empresa.co — puedes pegar varios"
-      [value]="draft()" (input)="draft.set($any($event.target).value)" (keydown)="onKeydown($event)"></textarea>
-    <button type="button" class="btn btn-outline-secondary" [disabled]="!draft().trim()" (click)="add()">
-      <i class="fa-solid fa-plus me-1" aria-hidden="true"></i> Agregar
-    </button>
+  <div class="ep__search">
+    <i class="fa-solid fa-magnifying-glass ep__icon" aria-hidden="true"></i>
+    <input
+      #search
+      type="text"
+      class="form-control form-control-sm ep__input"
+      role="combobox"
+      autocomplete="off"
+      aria-autocomplete="list"
+      [id]="inputId()"
+      [placeholder]="placeholder()"
+      [disabled]="disabled()"
+      [attr.aria-expanded]="panelOpen()"
+      [attr.aria-controls]="listId()"
+      [attr.aria-activedescendant]="activeOptionId()"
+      [value]="term()"
+      (input)="onInput($any($event.target).value)"
+      (paste)="onPaste($event)"
+      (keydown)="onKeydown($event)"
+      (focus)="focused.set(true)"
+      (blur)="onBlur()" />
+
+    @if (panelOpen()) {
+      <ul class="ep__panel" role="listbox" aria-label="Personas encontradas" [id]="listId()">
+        @if (searching()) {
+          <li class="ep__status"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span> Buscando…</li>
+        } @else {
+          @if (failed()) {
+            <li class="ep__status">No se pudo buscar. Puedes escribir el correo completo.</li>
+          }
+          @for (user of options(); track user.id; let i = $index) {
+            <li
+              role="option"
+              class="ep__option"
+              [id]="listId() + '-' + i"
+              [class.is-active]="i === activeIndex()"
+              [attr.aria-selected]="i === activeIndex()"
+              (mousedown)="$event.preventDefault(); pickUser(user)"
+              (mouseenter)="activeIndex.set(i)">
+              <strong>{{ user.displayName }}</strong>
+              <small>{{ user.email }}@if (user.jobTitle) { · {{ user.jobTitle }} }</small>
+            </li>
+          }
+          @if (rawEmail(); as raw) {
+            <li
+              role="option"
+              class="ep__option ep__option--raw"
+              [id]="listId() + '-' + options().length"
+              [class.is-active]="activeIndex() === options().length"
+              [attr.aria-selected]="activeIndex() === options().length"
+              (mousedown)="$event.preventDefault(); pickRaw()"
+              (mouseenter)="activeIndex.set(options().length)">
+              <i class="fa-solid fa-plus me-1" aria-hidden="true"></i> Agregar «{{ raw }}»
+            </li>
+          }
+          @if (!options().length && !rawEmail() && !failed()) {
+            <li class="ep__status">Sin resultados. Escribe el correo completo para agregarlo.</li>
+          }
+        }
+      </ul>
+    }
   </div>
 
-  @if (message(); as text) { <div class="form-text text-danger">{{ text }}</div> }
+  @if (message(); as text) {
+    <div class="form-text ep__message">{{ text }}</div>
+  }
 </div>
 ```
 
-### `email-list-input.component.scss`
+### `email-picker.component.scss`
 
 ```scss
-.eli__chips {
+@use '../../../../../styles/courses-tokens' as tokens;
+
+:host {
+  @include tokens.courses-tokens;
+  display: block;
+}
+
+.ep.is-disabled { opacity: 0.6; }
+
+.ep__chips {
   display: flex;
   flex-wrap: wrap;
   gap: 0.375rem;
@@ -506,20 +735,20 @@ export class EmailListInputComponent {
   list-style: none;
 }
 
-.eli__chip {
+.ep__chip {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
   padding: 0.15rem 0.35rem 0.15rem 0.65rem;
-  border: 1px solid #fde68a;
+  border: 1px solid var(--cu-accent-border);
   border-radius: 999px;
-  background: #fffbeb;
-  color: #92400e;
+  background: var(--cu-accent-subtle-bg);
+  color: var(--cu-accent-text);
   font-size: 0.8rem;
   word-break: break-all;
 }
 
-.eli__remove {
+.ep__remove {
   display: grid;
   width: 1.25rem;
   height: 1.25rem;
@@ -532,12 +761,195 @@ export class EmailListInputComponent {
   &:hover { background: rgba(0, 0, 0, 0.08); }
 }
 
-.eli__add {
-  display: flex;
-  gap: 0.5rem;
+.ep__search { position: relative; }
 
-  textarea { resize: vertical; }
-  .btn { flex-shrink: 0; }
+.ep__icon {
+  position: absolute;
+  top: 50%;
+  left: 0.65rem;
+  color: var(--cu-gray-400);
+  font-size: 0.8rem;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.ep__input { padding-left: 1.9rem; }
+
+.ep__panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  max-height: 16rem;
+  margin: 0;
+  padding: 0.25rem;
+  overflow-y: auto;
+  border: 1px solid var(--cu-border);
+  border-radius: var(--cu-radius);
+  background: var(--cu-surface);
+  box-shadow: var(--cu-shadow-md);
+  list-style: none;
+}
+
+.ep__option {
+  display: grid;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--cu-radius-sm);
+  cursor: pointer;
+
+  small { color: var(--cu-muted); word-break: break-all; }
+
+  &.is-active { background: var(--cu-accent-subtle-bg); }
+  &--raw { display: block; color: var(--cu-accent-text); font-weight: 600; }
+}
+
+.ep__status {
+  padding: 0.5rem 0.6rem;
+  color: var(--cu-muted);
+  font-size: 0.85rem;
+}
+
+.ep__message { color: var(--cu-gray-800); font-weight: 600; }
+```
+
+### `presentation/alert-recipients/alert-recipients.component.ts`
+
+Las casillas y el campo de correos de **una** alerta. Recibe su `FormGroup`.
+
+```ts
+import { ChangeDetectionStrategy, Component, input } from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { ALERT_LIMITS } from '../../domain/course-alerts.model';
+import { EmailPickerComponent } from '../email-picker/email-picker.component';
+
+export type RecipientsForm = FormGroup<{
+  leader: FormControl<boolean>;
+  management: FormControl<boolean>;
+  direction: FormControl<boolean>;
+  emails: FormControl<string[]>;
+}>;
+
+@Component({
+  selector: 'app-alert-recipients',
+  imports: [ReactiveFormsModule, EmailPickerComponent],
+  templateUrl: './alert-recipients.component.html',
+  styleUrl: './alert-recipients.component.scss',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class AlertRecipientsComponent {
+  readonly group = input.required<RecipientsForm>();
+  readonly idPrefix = input.required<string>();
+  /** copy = copias de una alerta a la persona; report = destinatarios del reporte. */
+  readonly mode = input<'copy' | 'report'>('copy');
+  readonly invalid = input(false);
+
+  readonly maxEmails = ALERT_LIMITS.maxEmails;
+}
+```
+
+### `alert-recipients.component.html`
+
+```html
+<fieldset class="ar" [formGroup]="group()" [class.is-invalid]="invalid()">
+  <legend class="ar__legend">{{ mode() === 'copy' ? 'Con copia a' : 'Quién recibe el reporte' }}</legend>
+
+  <div class="ar__checks">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" [id]="idPrefix() + '-leader'" formControlName="leader" />
+      <label class="form-check-label" [for]="idPrefix() + '-leader'">
+        {{ mode() === 'copy' ? 'Su líder' : 'Los líderes' }}
+        @if (mode() === 'report') {
+          <span class="ar__hint">Cada líder recibe solo su equipo dentro del grupo.</span>
+        }
+      </label>
+    </div>
+
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" [id]="idPrefix() + '-management'" formControlName="management" />
+      <label class="form-check-label" [for]="idPrefix() + '-management'">
+        {{ mode() === 'copy' ? 'Su gerencia' : 'La gerencia' }} <span class="ar__soon">Pronto</span>
+      </label>
+    </div>
+
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" [id]="idPrefix() + '-direction'" formControlName="direction" />
+      <label class="form-check-label" [for]="idPrefix() + '-direction'">
+        {{ mode() === 'copy' ? 'Su dirección' : 'La dirección' }} <span class="ar__soon">Pronto</span>
+      </label>
+    </div>
+  </div>
+
+  @if (group().controls.management.value || group().controls.direction.value) {
+    <p class="ar__note">
+      Gerencia y dirección se guardan, pero aún no se envían: falta que el maestro de empleados traiga el correo del responsable.
+    </p>
+  }
+
+  <label class="form-label small mb-1" [for]="idPrefix() + '-emails'">
+    {{ mode() === 'copy' ? 'Otras personas en copia' : 'Otros correos' }}
+  </label>
+  <app-email-picker formControlName="emails" [inputId]="idPrefix() + '-emails'" [max]="maxEmails" />
+</fieldset>
+```
+
+### `alert-recipients.component.scss`
+
+```scss
+@use '../../../../../styles/courses-tokens' as tokens;
+
+:host {
+  @include tokens.courses-tokens;
+  display: block;
+}
+
+.ar {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px dashed var(--cu-border);
+  border-radius: var(--cu-radius);
+  background: var(--cu-gray-50);
+
+  &.is-invalid { border-color: var(--cu-gray-800); border-style: solid; }
+}
+
+.ar__legend {
+  float: none;
+  width: auto;
+  margin: 0;
+  padding: 0;
+  color: var(--cu-gray-700);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ar__checks { display: grid; gap: 0.25rem; }
+
+.ar__hint {
+  display: block;
+  color: var(--cu-muted);
+  font-size: 0.75rem;
+}
+
+.ar__soon {
+  margin-left: 0.25rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--cu-gray-200);
+  color: var(--cu-gray-600);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.ar__note {
+  margin: 0;
+  color: var(--cu-gray-600);
+  font-size: 0.75rem;
 }
 ```
 
@@ -550,47 +962,49 @@ export class EmailListInputComponent {
 ### `alert-settings-form.component.ts`
 
 ```ts
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, untracked } from '@angular/core';
-import { AbstractControl, NonNullableFormBuilder, ReactiveFormsModule, ValidationErrors } from '@angular/forms';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { AbstractControl, NonNullableFormBuilder, ReactiveFormsModule, ValidationErrors, ValidatorFn, Validators } from '@angular/forms';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { map } from 'rxjs';
 import {
   ALERT_LIMITS,
+  AlertRecipients,
   CourseAlertSettings,
-  REMINDER_DAY_OPTIONS,
-  REPORT_MOMENTS,
-  URGENT_DAY_OPTIONS,
   daysBeforeLabel,
   momentLabel,
 } from '../../domain/course-alerts.model';
-import { EmailListInputComponent } from '../email-list-input/email-list-input.component';
+import { AlertRecipientsComponent, RecipientsForm } from '../alert-recipients/alert-recipients.component';
 
 type Tone = 'accent' | 'dark' | 'gray' | 'due';
 interface TimelineItem { offset: number; title: string; detail: string; tone: Tone }
+type MomentWhen = 'before' | 'on' | 'after';
+
+/** Solo enteros (el input number acepta "2.5"). */
+const wholeNumber: ValidatorFn = (control) =>
+  control.value === null || Number.isInteger(control.value) ? null : { wholeNumber: true };
 
 /** Las mismas reglas de la API, para avisar antes de enviar. */
 function settingsValidator(group: AbstractControl): ValidationErrors | null {
   const v = group.value as CourseAlertSettings;
   const errors: ValidationErrors = {};
 
-  if (v.reminderEnabled && v.urgentEnabled && v.urgentDaysBefore >= v.reminderDaysBefore) {
+  if (v.reminder.enabled && v.urgent.enabled && v.urgent.daysBefore >= v.reminder.daysBefore) {
     errors['urgentNotCloser'] = true;
   }
 
-  const anyCopy = (v.welcomeEnabled && v.welcomeCopy) || (v.reminderEnabled && v.reminderCopy) || (v.urgentEnabled && v.urgentCopy);
-  if (anyCopy && !v.copyLeader && !v.copyManagement && !v.copyEmails.length) {
-    errors['copyWithoutRecipients'] = true;
-  }
+  if (v.report.enabled && !v.report.dayOffsets.length) errors['reportWithoutMoments'] = true;
 
-  if (v.reportEnabled && !v.reportDayOffsets.length) errors['reportWithoutMoments'] = true;
-  if (v.reportEnabled && !v.reportEmails.length) errors['reportWithoutEmails'] = true;
+  const to = v.report.to;
+  if (v.report.enabled && !to.leader && !to.management && !to.direction && !to.emails.length) {
+    errors['reportWithoutRecipients'] = true;
+  }
 
   return Object.keys(errors).length ? errors : null;
 }
 
 @Component({
   selector: 'app-alert-settings-form',
-  imports: [ReactiveFormsModule, EmailListInputComponent],
+  imports: [ReactiveFormsModule, AlertRecipientsComponent],
   templateUrl: './alert-settings-form.component.html',
   styleUrl: './alert-settings-form.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -606,29 +1020,20 @@ export class AlertSettingsFormComponent {
   /** La página lo usa para "¿Salir sin guardar?". */
   readonly dirtyChange = output<boolean>();
 
-  readonly reminderDays = REMINDER_DAY_OPTIONS;
-  readonly urgentDays = URGENT_DAY_OPTIONS;
-  readonly moments = REPORT_MOMENTS;
   readonly limits = ALERT_LIMITS;
   readonly daysBeforeLabel = daysBeforeLabel;
   readonly momentLabel = momentLabel;
 
   readonly form = this.fb.group(
     {
-      welcomeEnabled: [true],
-      welcomeCopy: [false],
-      reminderEnabled: [true],
-      reminderDaysBefore: [7],
-      reminderCopy: [false],
-      urgentEnabled: [true],
-      urgentDaysBefore: [2],
-      urgentCopy: [true],
-      copyLeader: [true],
-      copyManagement: [false],
-      copyEmails: this.fb.control<string[]>([]),
-      reportEnabled: [false],
-      reportDayOffsets: this.fb.control<number[]>([]),
-      reportEmails: this.fb.control<string[]>([]),
+      welcome: this.fb.group({ enabled: [true], copy: this.recipients() }),
+      reminder: this.fb.group({ enabled: [true], daysBefore: [7, this.daysValidators()], copy: this.recipients() }),
+      urgent: this.fb.group({ enabled: [true], daysBefore: [2, this.daysValidators()], copy: this.recipients() }),
+      report: this.fb.group({
+        enabled: [false],
+        dayOffsets: this.fb.control<number[]>([]),
+        to: this.recipients(),
+      }),
     },
     { validators: settingsValidator },
   );
@@ -638,19 +1043,24 @@ export class AlertSettingsFormComponent {
     initialValue: this.form.getRawValue(),
   });
 
+  // ── Agregar un momento del reporte ─────────────────────────────────
+  readonly momentDays = signal<number | null>(3);
+  readonly momentWhen = signal<MomentWhen>('after');
+  readonly momentError = signal<string | null>(null);
+
   /** Cómo quedan los envíos respecto a la fecha límite, de izquierda a derecha. */
   readonly timeline = computed<TimelineItem[]>(() => {
     const v = this.current();
     const items: TimelineItem[] = [{ offset: 0, title: 'Fecha límite', detail: 'Día de cierre', tone: 'due' }];
 
-    if (v.reminderEnabled) {
-      items.push({ offset: -v.reminderDaysBefore, title: 'Recordatorio', detail: daysBeforeLabel(v.reminderDaysBefore), tone: 'accent' });
+    if (v.reminder.enabled) {
+      items.push({ offset: -v.reminder.daysBefore, title: 'Recordatorio', detail: daysBeforeLabel(v.reminder.daysBefore), tone: 'accent' });
     }
-    if (v.urgentEnabled) {
-      items.push({ offset: -v.urgentDaysBefore, title: 'Urgente', detail: daysBeforeLabel(v.urgentDaysBefore), tone: 'dark' });
+    if (v.urgent.enabled) {
+      items.push({ offset: -v.urgent.daysBefore, title: 'Urgente', detail: daysBeforeLabel(v.urgent.daysBefore), tone: 'dark' });
     }
-    if (v.reportEnabled) {
-      for (const offset of v.reportDayOffsets) {
+    if (v.report.enabled) {
+      for (const offset of v.report.dayOffsets) {
         items.push({ offset, title: 'Reporte', detail: momentLabel(offset), tone: 'gray' });
       }
     }
@@ -664,21 +1074,12 @@ export class AlertSettingsFormComponent {
       const value = this.value();
       untracked(() => {
         this.form.reset({
-          welcomeEnabled: value.welcomeEnabled,
-          welcomeCopy: value.welcomeCopy,
-          reminderEnabled: value.reminderEnabled,
-          reminderDaysBefore: value.reminderDaysBefore,
-          reminderCopy: value.reminderCopy,
-          urgentEnabled: value.urgentEnabled,
-          urgentDaysBefore: value.urgentDaysBefore,
-          urgentCopy: value.urgentCopy,
-          copyLeader: value.copyLeader,
-          copyManagement: value.copyManagement,
-          copyEmails: [...value.copyEmails],
-          reportEnabled: value.reportEnabled,
-          reportDayOffsets: [...value.reportDayOffsets],
-          reportEmails: [...value.reportEmails],
+          welcome: { enabled: value.welcome.enabled, copy: copyOf(value.welcome.copy) },
+          reminder: { enabled: value.reminder.enabled, daysBefore: value.reminder.daysBefore, copy: copyOf(value.reminder.copy) },
+          urgent: { enabled: value.urgent.enabled, daysBefore: value.urgent.daysBefore, copy: copyOf(value.urgent.copy) },
+          report: { enabled: value.report.enabled, dayOffsets: [...value.report.dayOffsets], to: copyOf(value.report.to) },
         });
+        this.momentError.set(null);
         this.dirtyChange.emit(false);
       });
     });
@@ -686,25 +1087,42 @@ export class AlertSettingsFormComponent {
     this.form.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => this.dirtyChange.emit(this.form.dirty));
   }
 
-  setEmails(control: 'copyEmails' | 'reportEmails', emails: string[]): void {
+  addMoment(): void {
+    const when = this.momentWhen();
+    const days = when === 'on' ? 0 : this.momentDays();
+
+    if (days === null || !Number.isInteger(days) || days < (when === 'on' ? 0 : 1) || days > this.limits.maxOffset) {
+      this.momentError.set(`Escribe un número de días entre 1 y ${this.limits.maxOffset}.`);
+      return;
+    }
+
+    const offset = when === 'before' ? -days : days;
+    const current = this.form.controls.report.controls.dayOffsets.value;
+
+    if (current.includes(offset)) {
+      this.momentError.set(`"${momentLabel(offset)}" ya está en la lista.`);
+      return;
+    }
+
+    if (current.length >= this.limits.maxMoments) {
+      this.momentError.set(`Puedes tener hasta ${this.limits.maxMoments} momentos.`);
+      return;
+    }
+
+    this.form.controls.report.controls.dayOffsets.setValue([...current, offset].sort((a, b) => a - b));
     this.form.markAsDirty();
-    this.form.controls[control].setValue(emails);
+    this.momentError.set(null);
   }
 
-  toggleMoment(offset: number, checked: boolean): void {
-    const current = this.form.controls.reportDayOffsets.value;
-    const next = checked ? [...current, offset].sort((a, b) => a - b) : current.filter(item => item !== offset);
+  removeMoment(offset: number): void {
+    const control = this.form.controls.report.controls.dayOffsets;
+    control.setValue(control.value.filter((item) => item !== offset));
     this.form.markAsDirty();
-    this.form.controls.reportDayOffsets.setValue(next);
   }
 
-  isMomentChecked(offset: number): boolean {
-    return this.current().reportDayOffsets.includes(offset);
-  }
-
-  /** Con 5 momentos elegidos, los demás se deshabilitan. */
-  isMomentDisabled(offset: number): boolean {
-    return !this.isMomentChecked(offset) && this.current().reportDayOffsets.length >= this.limits.maxReportMoments;
+  hasDaysError(alert: 'reminder' | 'urgent'): boolean {
+    const control = this.form.controls[alert].controls.daysBefore;
+    return control.invalid && (control.touched || control.dirty);
   }
 
   submit(): void {
@@ -712,6 +1130,25 @@ export class AlertSettingsFormComponent {
     if (this.form.invalid || this.saving()) return;
     this.save.emit(this.form.getRawValue());
   }
+
+  // ── Privados ───────────────────────────────────────────────────────
+
+  private recipients(): RecipientsForm {
+    return this.fb.group({
+      leader: [false],
+      management: [false],
+      direction: [false],
+      emails: this.fb.control<string[]>([]),
+    });
+  }
+
+  private daysValidators(): ValidatorFn[] {
+    return [Validators.required, Validators.min(0), Validators.max(ALERT_LIMITS.maxDays), wholeNumber];
+  }
+}
+
+function copyOf(r: AlertRecipients): AlertRecipients {
+  return { leader: r.leader, management: r.management, direction: r.direction, emails: [...r.emails] };
 }
 ```
 
@@ -720,59 +1157,22 @@ export class AlertSettingsFormComponent {
 ```html
 <form class="asf" [formGroup]="form" (ngSubmit)="submit()" novalidate>
 
-  <!-- ── 1. A quién se copia ──────────────────────────────────────── -->
-  <section class="asf-card" aria-labelledby="asf-copy-title">
-    <header class="asf-card__head">
-      <span class="asf-card__icon"><i class="fa-solid fa-users" aria-hidden="true"></i></span>
-      <div>
-        <h2 id="asf-copy-title" class="asf-card__title">A quién se copia</h2>
-        <p class="asf-card__hint">Reciben una copia del mismo correo que le llega a la persona, en las alertas que marques "con copia".</p>
-      </div>
-    </header>
-
-    <div class="asf-switches">
-      <div class="form-check form-switch">
-        <input class="form-check-input" type="checkbox" role="switch" id="asf-copy-leader" formControlName="copyLeader" />
-        <label class="form-check-label" for="asf-copy-leader">
-          Su líder <span class="form-text d-block mt-0">El líder de cada persona según el directorio de Microsoft.</span>
-        </label>
-      </div>
-
-      <div class="form-check form-switch">
-        <input class="form-check-input" type="checkbox" role="switch" id="asf-copy-management" formControlName="copyManagement" />
-        <label class="form-check-label" for="asf-copy-management">
-          Su gerencia <span class="asf-soon">Pronto</span>
-          <span class="form-text d-block mt-0">Se guarda, pero se enviará cuando esté conectada la información de gerencias.</span>
-        </label>
-      </div>
-    </div>
-
-    <app-email-list-input
-      inputId="asf-copy-emails"
-      label="Otros correos en copia"
-      hint="Por ejemplo, el equipo de formación."
-      [emails]="form.controls.copyEmails.value"
-      [max]="limits.maxEmails"
-      (emailsChange)="setEmails('copyEmails', $event)" />
-
-    @if (form.errors?.['copyWithoutRecipients'] && form.touched) {
-      <div class="asf-error" role="alert">Activaste copias, pero no hay a quién enviarlas: elige el líder o la gerencia, o agrega correos.</div>
-    }
-  </section>
-
-  <!-- ── 2. Alertas a la persona ──────────────────────────────────── -->
+  <!-- ── 1. Alertas a la persona ──────────────────────────────────── -->
   <section class="asf-card" aria-labelledby="asf-person-title">
     <header class="asf-card__head">
       <span class="asf-card__icon"><i class="fa-solid fa-envelope" aria-hidden="true"></i></span>
       <div>
         <h2 id="asf-person-title" class="asf-card__title">Alertas a la persona</h2>
-        <p class="asf-card__hint">Los recordatorios solo llegan a quien no ha diligenciado el formulario de finalización.</p>
+        <p class="asf-card__hint">
+          Cada alerta tiene sus propias copias: llegan en CC del mismo correo de la persona.
+          Los recordatorios solo llegan a quien no ha diligenciado el formulario de finalización.
+        </p>
       </div>
     </header>
 
     <div class="asf-alerts">
       <!-- Bienvenida -->
-      <article class="asf-alert" [class.is-off]="!current().welcomeEnabled">
+      <article class="asf-alert" formGroupName="welcome" [class.is-off]="!current().welcome.enabled">
         <div class="asf-alert__top">
           <span class="asf-alert__badge" data-tone="gray">1</span>
           <div class="asf-alert__text">
@@ -780,20 +1180,17 @@ export class AlertSettingsFormComponent {
             <p>Al asignarle el curso.</p>
           </div>
           <div class="form-check form-switch ms-auto">
-            <input class="form-check-input" type="checkbox" role="switch" id="asf-welcome" formControlName="welcomeEnabled"
+            <input class="form-check-input" type="checkbox" role="switch" id="asf-welcome" formControlName="enabled"
               aria-label="Enviar la bienvenida" />
           </div>
         </div>
-        @if (current().welcomeEnabled) {
-          <div class="form-check">
-            <input class="form-check-input" type="checkbox" id="asf-welcome-copy" formControlName="welcomeCopy" />
-            <label class="form-check-label" for="asf-welcome-copy">Con copia</label>
-          </div>
+        @if (current().welcome.enabled) {
+          <app-alert-recipients idPrefix="asf-welcome-copy" [group]="form.controls.welcome.controls.copy" />
         }
       </article>
 
       <!-- Recordatorio normal -->
-      <article class="asf-alert" [class.is-off]="!current().reminderEnabled">
+      <article class="asf-alert" formGroupName="reminder" [class.is-off]="!current().reminder.enabled">
         <div class="asf-alert__top">
           <span class="asf-alert__badge" data-tone="accent">2</span>
           <div class="asf-alert__text">
@@ -801,26 +1198,31 @@ export class AlertSettingsFormComponent {
             <p>"Tienes un curso pendiente".</p>
           </div>
           <div class="form-check form-switch ms-auto">
-            <input class="form-check-input" type="checkbox" role="switch" id="asf-reminder" formControlName="reminderEnabled"
+            <input class="form-check-input" type="checkbox" role="switch" id="asf-reminder" formControlName="enabled"
               aria-label="Enviar el recordatorio" />
           </div>
         </div>
-        @if (current().reminderEnabled) {
-          <label class="form-label small mb-1" for="asf-reminder-days">Cuándo</label>
-          <select id="asf-reminder-days" class="form-select form-select-sm" formControlName="reminderDaysBefore">
-            @for (d of reminderDays; track d) {
-              <option [ngValue]="d">{{ daysBeforeLabel(d) }}</option>
-            }
-          </select>
-          <div class="form-check mt-2">
-            <input class="form-check-input" type="checkbox" id="asf-reminder-copy" formControlName="reminderCopy" />
-            <label class="form-check-label" for="asf-reminder-copy">Con copia</label>
+        @if (current().reminder.enabled) {
+          <label class="form-label small mb-1" for="asf-reminder-days">Cuántos días antes de la fecha límite</label>
+          <div class="input-group input-group-sm asf-days">
+            <input id="asf-reminder-days" type="number" inputmode="numeric" class="form-control"
+              min="0" [max]="limits.maxDays" step="1" formControlName="daysBefore"
+              [class.is-invalid]="hasDaysError('reminder')" aria-describedby="asf-reminder-days-help" />
+            <span class="input-group-text">días antes</span>
           </div>
+          <div id="asf-reminder-days-help" class="form-text mt-0">
+            @if (hasDaysError('reminder')) {
+              <span class="asf-inline-error">Un número entero de 0 a {{ limits.maxDays }}.</span>
+            } @else {
+              {{ daysBeforeLabel(current().reminder.daysBefore) }} · 0 = el mismo día.
+            }
+          </div>
+          <app-alert-recipients idPrefix="asf-reminder-copy" [group]="form.controls.reminder.controls.copy" />
         }
       </article>
 
       <!-- Urgente -->
-      <article class="asf-alert asf-alert--urgent" [class.is-off]="!current().urgentEnabled">
+      <article class="asf-alert asf-alert--urgent" formGroupName="urgent" [class.is-off]="!current().urgent.enabled">
         <div class="asf-alert__top">
           <span class="asf-alert__badge" data-tone="dark">3</span>
           <div class="asf-alert__text">
@@ -828,21 +1230,26 @@ export class AlertSettingsFormComponent {
             <p>"Tu curso está por vencer".</p>
           </div>
           <div class="form-check form-switch ms-auto">
-            <input class="form-check-input" type="checkbox" role="switch" id="asf-urgent" formControlName="urgentEnabled"
+            <input class="form-check-input" type="checkbox" role="switch" id="asf-urgent" formControlName="enabled"
               aria-label="Enviar la alerta urgente" />
           </div>
         </div>
-        @if (current().urgentEnabled) {
-          <label class="form-label small mb-1" for="asf-urgent-days">Cuándo</label>
-          <select id="asf-urgent-days" class="form-select form-select-sm" formControlName="urgentDaysBefore">
-            @for (d of urgentDays; track d) {
-              <option [ngValue]="d">{{ daysBeforeLabel(d) }}</option>
-            }
-          </select>
-          <div class="form-check mt-2">
-            <input class="form-check-input" type="checkbox" id="asf-urgent-copy" formControlName="urgentCopy" />
-            <label class="form-check-label" for="asf-urgent-copy">Con copia</label>
+        @if (current().urgent.enabled) {
+          <label class="form-label small mb-1" for="asf-urgent-days">Cuántos días antes de la fecha límite</label>
+          <div class="input-group input-group-sm asf-days">
+            <input id="asf-urgent-days" type="number" inputmode="numeric" class="form-control"
+              min="0" [max]="limits.maxDays" step="1" formControlName="daysBefore"
+              [class.is-invalid]="hasDaysError('urgent')" aria-describedby="asf-urgent-days-help" />
+            <span class="input-group-text">días antes</span>
           </div>
+          <div id="asf-urgent-days-help" class="form-text mt-0">
+            @if (hasDaysError('urgent')) {
+              <span class="asf-inline-error">Un número entero de 0 a {{ limits.maxDays }}.</span>
+            } @else {
+              {{ daysBeforeLabel(current().urgent.daysBefore) }} · 0 = el mismo día.
+            }
+          </div>
+          <app-alert-recipients idPrefix="asf-urgent-copy" [group]="form.controls.urgent.controls.copy" />
         }
       </article>
     </div>
@@ -852,8 +1259,8 @@ export class AlertSettingsFormComponent {
     }
   </section>
 
-  <!-- ── 3. Reporte de resultados ─────────────────────────────────── -->
-  <section class="asf-card" aria-labelledby="asf-report-title">
+  <!-- ── 2. Reporte de resultados ─────────────────────────────────── -->
+  <section class="asf-card" formGroupName="report" aria-labelledby="asf-report-title">
     <header class="asf-card__head">
       <span class="asf-card__icon"><i class="fa-solid fa-chart-column" aria-hidden="true"></i></span>
       <div class="flex-grow-1">
@@ -861,39 +1268,66 @@ export class AlertSettingsFormComponent {
         <p class="asf-card__hint">Por grupo: cuántos finalizaron y cuántos faltan, con sus nombres, y las calificaciones (anónimas). Cada destinatario recibe su propio correo.</p>
       </div>
       <div class="form-check form-switch">
-        <input class="form-check-input" type="checkbox" role="switch" id="asf-report" formControlName="reportEnabled"
+        <input class="form-check-input" type="checkbox" role="switch" id="asf-report" formControlName="enabled"
           aria-label="Enviar el reporte de resultados" />
       </div>
     </header>
 
-    @if (current().reportEnabled) {
+    @if (current().report.enabled) {
       <fieldset class="asf-moments">
         <legend class="form-label fw-semibold">Cuándo (respecto a la fecha límite de cada grupo)</legend>
-        <div class="asf-moments__list">
-          @for (offset of moments; track offset) {
-            <label class="asf-moment" [class.is-checked]="isMomentChecked(offset)" [class.is-disabled]="isMomentDisabled(offset)">
-              <input type="checkbox" class="visually-hidden"
-                [checked]="isMomentChecked(offset)" [disabled]="isMomentDisabled(offset)"
-                (change)="toggleMoment(offset, $any($event.target).checked)" />
-              {{ momentLabel(offset) }}
-            </label>
+
+        @if (current().report.dayOffsets.length) {
+          <ul class="asf-moments__list" aria-label="Momentos del reporte">
+            @for (offset of current().report.dayOffsets; track offset) {
+              <li class="asf-moment">
+                {{ momentLabel(offset) }}
+                <button type="button" class="asf-moment__remove" [attr.aria-label]="'Quitar ' + momentLabel(offset)" (click)="removeMoment(offset)">
+                  <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                </button>
+              </li>
+            }
+          </ul>
+        }
+
+        <div class="asf-moments__add">
+          @if (momentWhen() !== 'on') {
+            <label class="visually-hidden" for="asf-moment-days">Días</label>
+            <input id="asf-moment-days" type="number" inputmode="numeric" class="form-control form-control-sm asf-moments__days"
+              min="1" [max]="limits.maxOffset" step="1"
+              [value]="momentDays() ?? ''"
+              (input)="momentDays.set($any($event.target).value === '' ? null : +$any($event.target).value)"
+              (keydown.enter)="$event.preventDefault(); addMoment()" />
           }
+          <label class="visually-hidden" for="asf-moment-when">Antes o después</label>
+          <select id="asf-moment-when" class="form-select form-select-sm asf-moments__when"
+            [value]="momentWhen()" (change)="momentWhen.set($any($event.target).value)">
+            <option value="before" [selected]="momentWhen() === 'before'">días antes</option>
+            <option value="on" [selected]="momentWhen() === 'on'">el día de la fecha límite</option>
+            <option value="after" [selected]="momentWhen() === 'after'">días después</option>
+          </select>
+          <button type="button" class="btn btn-sm btn-outline-secondary" (click)="addMoment()">
+            <i class="fa-solid fa-plus me-1" aria-hidden="true"></i> Agregar
+          </button>
         </div>
-        <div class="form-text">Hasta {{ limits.maxReportMoments }} momentos.</div>
+
+        @if (momentError(); as text) {
+          <div class="asf-inline-error mt-1" role="alert">{{ text }}</div>
+        } @else {
+          <div class="form-text">Cualquier número de días, hasta {{ limits.maxMoments }} momentos.</div>
+        }
       </fieldset>
       @if (form.errors?.['reportWithoutMoments'] && form.touched) {
-        <div class="asf-error" role="alert">Elige al menos un momento.</div>
+        <div class="asf-error" role="alert">Agrega al menos un momento.</div>
       }
 
-      <app-email-list-input
-        inputId="asf-report-emails"
-        label="Quién recibe el reporte"
-        [emails]="form.controls.reportEmails.value"
-        [max]="limits.maxEmails"
-        [invalid]="!!form.errors?.['reportWithoutEmails'] && form.touched"
-        (emailsChange)="setEmails('reportEmails', $event)" />
-      @if (form.errors?.['reportWithoutEmails'] && form.touched) {
-        <div class="asf-error" role="alert">Agrega al menos un correo.</div>
+      <app-alert-recipients
+        idPrefix="asf-report-to"
+        mode="report"
+        [group]="form.controls.report.controls.to"
+        [invalid]="!!form.errors?.['reportWithoutRecipients'] && form.touched" />
+      @if (form.errors?.['reportWithoutRecipients'] && form.touched) {
+        <div class="asf-error" role="alert">Elige quién recibe el reporte: líderes, gerencia, dirección u otros correos.</div>
       }
     }
   </section>
@@ -905,7 +1339,7 @@ export class AlertSettingsFormComponent {
       <li class="asf-timeline__item" data-tone="gray">
         <span class="asf-timeline__dot" aria-hidden="true"></span>
         <strong>Asignación</strong>
-        <small>{{ current().welcomeEnabled ? 'Bienvenida' : 'Sin bienvenida' }}</small>
+        <small>{{ current().welcome.enabled ? 'Bienvenida' : 'Sin bienvenida' }}</small>
       </li>
       @for (item of timeline(); track item.title + item.offset) {
         <li class="asf-timeline__item" [attr.data-tone]="item.tone">
@@ -972,19 +1406,6 @@ export class AlertSettingsFormComponent {
 .asf-card__title { margin: 0; font-size: 1.05rem; font-weight: 700; }
 .asf-card__hint { margin: 0.15rem 0 0; color: var(--cu-muted); font-size: 0.85rem; }
 
-.asf-switches { display: grid; gap: 0.75rem; }
-
-.asf-soon {
-  margin-left: 0.35rem;
-  padding: 0.05rem 0.45rem;
-  border-radius: 999px;
-  background: var(--cu-gray-200);
-  color: var(--cu-gray-600);
-  font-size: 0.65rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
 .asf-error {
   padding: 0.5rem 0.75rem;
   border-left: 3px solid var(--cu-gray-800);
@@ -994,17 +1415,20 @@ export class AlertSettingsFormComponent {
   font-size: 0.85rem;
 }
 
+.asf-inline-error { color: var(--cu-gray-800); font-size: 0.8rem; font-weight: 600; }
+
 // ── Las tres alertas ────────────────────────────────────────────────
 .asf-alerts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
+  align-items: start;
 }
 
 .asf-alert {
   display: grid;
   align-content: start;
-  gap: 0.375rem;
+  gap: 0.5rem;
   padding: 0.875rem;
   border: 1.5px solid var(--cu-border);
   border-radius: var(--cu-radius);
@@ -1034,34 +1458,55 @@ export class AlertSettingsFormComponent {
   &[data-tone='dark'] { background: var(--cu-gray-800); color: #fff; }
 }
 
+.asf-days { max-width: 12rem; }
+
 // ── Momentos del reporte ────────────────────────────────────────────
 .asf-moments { margin: 0; padding: 0; border: 0; }
 
-.asf-moments__list { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.asf-moments__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  list-style: none;
+}
 
 .asf-moment {
-  padding: 0.35rem 0.8rem;
-  border: 1.5px solid var(--cu-border);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.35rem 0.25rem 0.8rem;
+  border: 1.5px solid var(--cu-accent);
   border-radius: 999px;
-  background: var(--cu-surface);
-  color: var(--cu-gray-700);
+  background: var(--cu-accent-subtle-bg);
+  color: var(--cu-accent-text);
   font-size: 0.82rem;
   font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-
-  &:hover:not(.is-disabled) { border-color: var(--cu-accent-border); }
-
-  &.is-checked {
-    border-color: var(--cu-accent);
-    background: var(--cu-accent-subtle-bg);
-    color: var(--cu-accent-text);
-  }
-
-  &.is-disabled { opacity: 0.45; cursor: not-allowed; }
-
-  &:has(input:focus-visible) { outline: 2px solid var(--cu-accent); outline-offset: 2px; }
 }
+
+.asf-moment__remove {
+  display: grid;
+  width: 1.3rem;
+  height: 1.3rem;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+
+  &:hover { background: rgba(0, 0, 0, 0.08); }
+}
+
+.asf-moments__add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.asf-moments__days { width: 5.5rem; }
+.asf-moments__when { width: auto; }
 
 // ── Línea de tiempo ─────────────────────────────────────────────────
 .asf-timeline__list {
@@ -1135,7 +1580,7 @@ export class AlertSettingsFormComponent {
   background: linear-gradient(to top, var(--cu-surface-alt) 70%, transparent);
 }
 
-@media (max-width: 991.98px) {
+@media (max-width: 1199.98px) {
   .asf-alerts { grid-template-columns: 1fr; }
 }
 
@@ -1144,6 +1589,8 @@ export class AlertSettingsFormComponent {
   .asf-actions .btn { flex: 1 1 100%; }
 }
 ```
+
+> **Las tres alertas apiladas desde 1200 px:** cada una tiene ahora sus copias y el buscador, así que en tres columnas quedaban muy angostas.
 
 ---
 
@@ -1908,22 +2355,36 @@ const ALERT_TYPE_LABELS: Readonly<Record<string, string>> = {
 ## 11. Pruebas
 
 **Configuración general (`/cursos/alertas`)**
-- **Abrirla:** desde "Configurar alertas" en Cursos. Carga con los valores por defecto: bienvenida, recordatorio 7 días antes y urgente 2 días antes con copia al líder.
-- **"Su gerencia":** tiene la etiqueta "Pronto" y el texto de que aún no se envía.
-- **Correos en copia:**
-  - Pegar `a@x.co; b@x.co, a@x.co` y "Agregar" (o Enter) deja dos chips.
-  - La × quita uno.
-  - Un texto sin correos dice "No encontramos correos…".
+- **Abrirla:**
+  - Desde "Configurar alertas" en Cursos.
+  - Carga con los valores por defecto: bienvenida sin copias, recordatorio 7 días antes y urgente 2 días antes con copia a su líder.
+- **Copias por alerta:**
+  - Cada alerta encendida muestra "Con copia a" con su líder, su gerencia, su dirección y "Otras personas en copia".
+  - Marcar el líder en el recordatorio no lo marca en la urgente.
+- **Gerencia y dirección:** tienen la etiqueta "Pronto" y, al marcarlas, el aviso de que aún no se envían.
+- **Buscar personas:**
+  - Escribir "ana" muestra personas de `/api/users/search` con nombre y correo, y elegir una la agrega como chip.
+  - Escribir `formacion@empresa.co` (que no está en usuarios) ofrece "Agregar «formacion@empresa.co»".
+  - Pegar `Ana <ana@x.co>; b@x.co, ana@x.co` agrega dos chips.
+  - La × quita uno. Backspace con el buscador vacío quita el último.
+- **Días como número libre:**
+  - Recordatorio en 45 y urgente en 10 se aceptan.
+  - 400 o 2,5 muestran "Un número entero de 0 a 365.".
+  - El texto de ayuda dice "45 días antes".
+- **Momentos del reporte:**
+  - "10" + "días antes" + Agregar crea el chip "10 días antes".
+  - "el día de la fecha límite" no pide número.
+  - Agregar uno repetido dice "… ya está en la lista.".
+  - El máximo es 20.
 - **Avisos antes de guardar:**
   - **Urgente 7 días y recordatorio 3:** "La alerta urgente debe enviarse más cerca…".
-  - **"Con copia" en la urgente, sin líder ni gerencia ni correos:** el aviso de copias. No se envía a la API.
-  - **Reporte activo sin momentos ni correos:** sus dos avisos.
-  - **Momentos del reporte:** con 5 elegidos, los demás se deshabilitan.
-- **Línea de tiempo:** se mueve al cambiar los días. Por ejemplo: Asignación → Recordatorio (7 días antes) → Urgente (2 días antes) → Fecha límite → Reporte (3 días después).
+  - **Reporte activo sin momentos o sin destinatarios:** sus dos avisos. No se envía a la API.
+- **Línea de tiempo:** se mueve al cambiar los días. Por ejemplo: Asignación → Recordatorio (45 días antes) → Urgente (10 días antes) → Fecha límite → Reporte (3 días después).
 - **Guardar:** el aviso "Configuración general guardada" y "Última edición: tu correo · fecha".
 - **Salir sin guardar:** con cambios pendientes, "¿Salir sin guardar?". Después de guardar, sale sin preguntar.
 - **Vista previa:**
-  - "Ver vista previa" muestra los conteos y la tabla, con el tipo en amarillo (recordatorio), gris oscuro (urgente) o gris (reporte), y las copias como "Líder" y los correos fijos.
+  - "Ver vista previa" muestra los conteos y la tabla, con el tipo en amarillo (recordatorio), gris oscuro (urgente) o gris (reporte).
+  - Las copias aparecen como "Líder", "Gerencia" y los correos de cada alerta, y los reportes a líderes como "correo (líder: su equipo)".
   - Sin nada pendiente: "Hoy no hay alertas por enviar".
 - **"Enviar ahora":** pide confirmación, responde enseguida con "En cola: …" y la vista previa queda vacía. Repetirlo encola 0.
   - El avance se ve en Cursos: el indicador de la tarjeta y el modal "Envío de correos" ([cursos-cola-correos-angular.md](cursos-cola-correos-angular.md)).
@@ -1945,11 +2406,11 @@ const ALERT_TYPE_LABELS: Readonly<Record<string, string>> = {
 ## ✅ Checklist
 
 - [ ] `features/course-alerts/domain`: modelo y repositorio.
-- [ ] `infraestructure`: servicio y providers.
+- [ ] `infraestructure`: servicio y providers (con `UsersDirectoryRepository`).
 - [ ] `application`: `CourseAlertSettingsFacade`.
 - [ ] `presentation`:
   - `_course-alerts-page.scss`.
-  - `email-list-input`.
+  - `email-picker` (buscador de `/api/users/search`) y `alert-recipients`.
   - `alert-settings-form`.
   - Las dos páginas.
 - [ ] Rutas `cursos/alertas` y `cursos/:id/alertas` con `unsavedChangesGuard`.

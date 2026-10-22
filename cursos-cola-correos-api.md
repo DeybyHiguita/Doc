@@ -169,6 +169,7 @@ BEGIN
         assignment_user_id  INT            NULL,       -- correos a una persona (bienvenida, recordatorios)
         assignment_id       INT            NULL,       -- correos de una asignación sin persona (reporte). Sin llave foránea, a propósito.
         recipient_email     NVARCHAR(320)  NULL,       -- destinatario fijo (reporte)
+        recipient_role      VARCHAR(20)    NULL,       -- por qué lo recibe (reporte): LEADER = solo su equipo, EMAIL = el grupo completo
         dedupe_key          NVARCHAR(450)  NULL,       -- evita encolar dos veces lo mismo (alertas programadas)
 
         status              VARCHAR(20)    NOT NULL CONSTRAINT df_ceq_status DEFAULT ('PENDING'),
@@ -218,6 +219,8 @@ namespace DOCCB.Domain.Entities
         public int? AssignmentUserId { get; set; }
         public int? AssignmentId { get; set; }
         public string? RecipientEmail { get; set; }
+        /// <summary>Por qué lo recibe (reporte): LEADER = solo su equipo, EMAIL = el grupo completo.</summary>
+        public string? RecipientRole { get; set; }
         public string? DedupeKey { get; set; }
 
         public string Status { get; set; } = string.Empty;
@@ -257,6 +260,7 @@ namespace DOCCB.Infraestructure.Configurations
             builder.Property(i => i.AssignmentUserId).HasColumnName("assignment_user_id");
             builder.Property(i => i.AssignmentId).HasColumnName("assignment_id");
             builder.Property(i => i.RecipientEmail).HasColumnName("recipient_email").HasMaxLength(320);
+            builder.Property(i => i.RecipientRole).HasColumnName("recipient_role").HasMaxLength(20).IsUnicode(false);
             builder.Property(i => i.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(450);
 
             builder.Property(i => i.Status).HasColumnName("status").HasMaxLength(20).IsUnicode(false).IsRequired();
